@@ -1,12 +1,17 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en-GB">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RI Renewal Workbench — Azure Reserved Instance utilisation review</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<meta name="description" content="Client-side workbench for reviewing Azure Reserved Instance utilisation ahead of renewal: access requirements, a Cloud Shell export script, and a bracketed renewal decision sheet. Reservation data never leaves the browser.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230E1420'/%3E%3Crect x='6' y='18' width='4' height='8' fill='%23F4577A'/%3E%3Crect x='12' y='13' width='4' height='13' fill='%23F2C94C'/%3E%3Crect x='18' y='9' width='4' height='17' fill='%234FC3A1'/%3E%3Crect x='24' y='6' width='4' height='20' fill='%233AA0FF'/%3E%3C/svg%3E">
+<!-- Everything below is served from this origin: no CDN, no webfont host, no third-party
+     request of any kind. That is what lets the CSP in customHttp.yml set connect-src 'none',
+     which is the machine-checkable version of "reservation data never leaves the browser". -->
+<link rel="stylesheet" href="vendor/fonts.css">
+<script src="vendor/papaparse.min.js"></script>
 <style>
 :root{
   --ink:#0E1420;          /* page base */
@@ -120,6 +125,11 @@ textarea::placeholder{color:var(--faint)}
 .parse-msg{font-family:var(--mono);font-size:12.5px;color:var(--faint)}
 .parse-msg.err{color:var(--b-critical)}
 .parse-msg.ok{color:var(--b-good)}
+.warn-list{margin-top:16px;display:none;flex-direction:column;gap:8px}
+.warn-list.show{display:flex}
+.warn-item{background:rgba(240,138,60,.07);border:1px solid rgba(240,138,60,.4);border-radius:var(--radius);
+  padding:12px 16px;color:var(--muted);font-size:13px;line-height:1.5}
+.warn-item b{color:var(--b-poor)}
 
 /* ---------- results ---------- */
 #results{display:none}
@@ -156,10 +166,16 @@ textarea::placeholder{color:var(--faint)}
 .bracket-body{display:none;border-top:1px solid var(--line)}
 .bracket-block.open .bracket-body{display:block}
 
-table{width:100%;border-collapse:collapse;font-size:13px}
+/* The symptom-check callout contains a very long unbreakable resource path; without
+   this it widens the whole document on a phone rather than wrapping inside its card. */
+code{overflow-wrap:anywhere}
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:560px}
 th{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
-  text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap;cursor:pointer;user-select:none}
-th:hover{color:var(--text)}
+  text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap;user-select:none}
+th[aria-sort]{cursor:pointer}
+th[aria-sort]:hover{color:var(--text)}
+th[aria-sort]:not([aria-sort="none"]){color:var(--text)}
 th .arrow{font-size:9px;margin-left:4px}
 td{padding:11px 14px;border-bottom:1px solid rgba(38,49,74,.5);vertical-align:middle}
 tr:last-child td{border-bottom:none}
@@ -188,8 +204,13 @@ footer a{color:var(--muted)}
 .src-list{margin-top:8px;line-height:1.9}
 @media (max-width:720px){
   .term-body{max-height:420px}
-  .rec-cell{max-width:none}
+  /* the table scrolls inside .table-scroll now, so the recommendation column keeps a
+     bounded width - letting it grow made every row several screens tall */
+  .rec-cell{max-width:300px;min-width:260px}
   th,td{padding:9px 10px}
+  /* hover labels can't be triggered on a touch screen and their absolute boxes
+     widen the document; the dots keep their aria-label for assistive tech */
+  .spec-label{display:none}
 }
 </style>
 </head>
@@ -299,6 +320,7 @@ footer a{color:var(--muted)}
       <button class="ghost-btn" id="demoBtn" type="button">Load sample data</button>
       <span class="parse-msg" id="parseMsg"></span>
     </div>
+    <div class="warn-list" id="parseWarnings" role="status" aria-live="polite"></div>
   </div>
 </section>
 
@@ -349,6 +371,11 @@ footer a{color:var(--muted)}
 #  Get-RIUtilisationReport  -  Azure Reserved Instance renewal review
 #  Paste-safe: run this whole block in Cloud Shell (PowerShell), or save
 #  as Get-RIUtilisationReport.ps1 and run ./Get-RIUtilisationReport.ps1
+#
+#  NOTE: Az.Reservations is published as a PREVIEW module, so property names
+#  on the objects it returns can change between versions. Every property this
+#  script reads goes through Get-Prop below, which tries each candidate name
+#  in turn and returns $null rather than throwing if none of them exist.
 # ===========================================================================
 
 # ------------------------------ CONFIG -------------------------------------
@@ -369,7 +396,21 @@ $ManualOrders = @(
 )
 # ---------------------------------------------------------------------------
 
+function Invoke-RIUtilisationReport {
+
 $ErrorActionPreference = 'Stop'
+
+# Az.Reservations is a preview module and has renamed output properties before
+# (Sku -> SkuName, ExpiryDate -> ExpiryDateTime). Read every field through this
+# so a rename degrades to a blank column instead of silently emitting nothing.
+function Get-Prop {
+    param($InputObject, [string[]]$Name)
+    foreach ($n in $Name) {
+        $p = $InputObject.PSObject.Properties[$n]
+        if ($p -and $null -ne $p.Value -and "$($p.Value)" -ne '') { return $p.Value }
+    }
+    return $null
+}
 
 foreach ($mod in 'Az.Reservations','Az.Billing') {
     if (-not (Get-Module -ListAvailable -Name $mod)) {
@@ -394,7 +435,9 @@ if ($ManualOrders.Count -gt 0) {
 else {
     Write-Host "`nFetching reservations visible in this tenant..." -ForegroundColor Cyan
     try {
-        $allReservations = @(Get-AzReservation)
+        # -SelectedState filters server-side; the client-side filter below is kept
+        # as a safety net in case an older module version ignores the parameter.
+        $allReservations = @(Get-AzReservation -SelectedState 'Succeeded')
     }
     catch {
         Write-Host ""
@@ -410,8 +453,8 @@ else {
     }
 }
 
-$active   = @($allReservations | Where-Object { $_.ProvisioningState -eq 'Succeeded' })
-$excluded = @($allReservations | Where-Object { $_.ProvisioningState -ne 'Succeeded' })
+$active   = @($allReservations | Where-Object { (Get-Prop $_ @('ProvisioningState','DisplayProvisioningState')) -eq 'Succeeded' })
+$excluded = @($allReservations | Where-Object { (Get-Prop $_ @('ProvisioningState','DisplayProvisioningState')) -ne 'Succeeded' })
 
 Write-Host ("Found {0} reservations total; {1} active, {2} excluded (state not Succeeded)." -f $allReservations.Count, $active.Count, $excluded.Count)
 
@@ -423,7 +466,10 @@ if ($active.Count -eq 0) {
 # ---------------------------------------------------------------------------
 # 2. Pull daily utilisation per reservation (last 24h excluded - data latency)
 # ---------------------------------------------------------------------------
-$endDate   = (Get-Date).Date.AddDays(-1)
+# -StartDate/-EndDate on Get-AzConsumptionReservationSummary are documented as UTC.
+# Cloud Shell already runs in UTC, but this keeps the window correct when the script
+# is run from a workstation in any other timezone.
+$endDate   = [datetime]::UtcNow.Date.AddDays(-1)
 $startDate = $endDate.AddDays(-$LookbackDays)
 
 $results = New-Object System.Collections.Generic.List[object]
@@ -435,7 +481,13 @@ foreach ($res in $active) {
     $orderId  = ($idParts[0] -split '/reservationOrders/')[-1]
     $reservId = ($idParts[-1] -split '/')[0]
 
-    Write-Progress -Activity "Pulling utilisation summaries" -Status ("{0}/{1}: {2} ({3})" -f $i, $active.Count, $res.DisplayName, $res.Sku) -PercentComplete (($i / $active.Count) * 100)
+    # Get-AzReservation returns IReservationResponse, whose property is SkuName.
+    # "Sku" is only a column label in the cmdlet's format view, so $res.Sku is $null.
+    $skuName     = Get-Prop $res @('SkuName','Sku')
+    $displayName = Get-Prop $res @('DisplayName','Name')
+    $expiry      = Get-Prop $res @('ExpiryDateTime','ExpiryDate')
+
+    Write-Progress -Activity "Pulling utilisation summaries" -Status ("{0}/{1}: {2} ({3})" -f $i, $active.Count, $displayName, $skuName) -PercentComplete (($i / $active.Count) * 100)
 
     $avg30 = $null; $avg7 = $null; $minDay = $null; $maxDay = $null
     $reservedHrs = 0; $usedHrs = 0; $dataDays = 0; $note = ''
@@ -461,8 +513,10 @@ foreach ($res in $active) {
             $u7 = ($last7 | Measure-Object UsedHour     -Sum).Sum
             if ($r7 -gt 0) { $avg7 = [math]::Round(($u7 / $r7) * 100, 1) }
 
-            $minDay = [math]::Round(($summaries | Measure-Object AvgUtilizationPercentage -Minimum).Minimum, 1)
-            $maxDay = [math]::Round(($summaries | Measure-Object AvgUtilizationPercentage -Maximum).Maximum, 1)
+            # Round($null) returns 0, which is indistinguishable from a genuine 0% day.
+            $mm = $summaries | Measure-Object AvgUtilizationPercentage -Minimum -Maximum
+            if ($null -ne $mm.Minimum) { $minDay = [math]::Round($mm.Minimum, 1) }
+            if ($null -ne $mm.Maximum) { $maxDay = [math]::Round($mm.Maximum, 1) }
         }
         else { $note = 'No summaries returned' }
     }
@@ -478,18 +532,18 @@ foreach ($res in $active) {
     elseif ($driver -ge $PoorMin)    { $bracket = 'POOR'    ; $action = 'Strong downsize / exchange candidate' }
     else                             { $bracket = 'CRITICAL'; $action = 'Do not renew at current qty; exchange or drop' }
 
-    if ($res.ExpiryDate) { $daysToExpiry = [int]([datetime]$res.ExpiryDate - (Get-Date)).TotalDays } else { $daysToExpiry = $null }
+    if ($expiry) { $daysToExpiry = [int]([datetime]$expiry - [datetime]::UtcNow).TotalDays } else { $daysToExpiry = $null }
 
     $results.Add([pscustomobject]@{
         Bracket             = $bracket
-        DisplayName         = $res.DisplayName
-        Sku                 = $res.Sku
-        ResourceType        = $res.ReservedResourceType
-        Location            = $res.Location
-        Quantity            = $res.Quantity
-        Term                = $res.Term
-        InstanceFlexibility = $res.InstanceFlexibility
-        AppliedScopeType    = $res.AppliedScopeType
+        DisplayName         = $displayName
+        Sku                 = $skuName
+        ResourceType        = Get-Prop $res @('ReservedResourceType')
+        Location            = Get-Prop $res @('Location')
+        Quantity            = Get-Prop $res @('Quantity')
+        Term                = Get-Prop $res @('Term')
+        InstanceFlexibility = Get-Prop $res @('InstanceFlexibility')
+        AppliedScopeType    = Get-Prop $res @('AppliedScopeType','UserFriendlyAppliedScopeType')
         'Avg30d%'           = $avg30
         'Avg7d%'            = $avg7
         'MinDay%'           = $minDay
@@ -497,9 +551,9 @@ foreach ($res in $active) {
         ReservedHours30d    = [math]::Round($reservedHrs, 0)
         UsedHours30d        = [math]::Round($usedHrs, 0)
         DataDays            = $dataDays
-        ExpiryDate          = $res.ExpiryDate
+        ExpiryDate          = $expiry
         DaysToExpiry        = $daysToExpiry
-        AutoRenew           = $res.Renew
+        AutoRenew           = Get-Prop $res @('Renew')
         SuggestedAction     = $action
         Note                = $note
         ReservationOrderId  = $orderId
@@ -538,6 +592,17 @@ $results | Sort-Object @{e={$bracketOrder.IndexOf($_.Bracket)}}, 'Avg30d%' | Exp
 
 Write-Host "`nCSV written to: $OutputCsv" -ForegroundColor Green
 Write-Host "Download it from Cloud Shell with:  download $(Split-Path $OutputCsv -Leaf)"
+
+# The workbench page recomputes brackets from Avg30d% using the same thresholds as the
+# CONFIG block above. If you change them here, or switch $BracketBy to 'Avg7', the page
+# will flag the rows where its bracket disagrees with the Bracket column written here.
+
+}   # end Invoke-RIUtilisationReport
+
+# Wrapping the body in a function is what makes this paste-safe: the early `return`s on
+# the access-failure paths above stop the report, rather than falling through to the rest
+# of the block the way a top-level `return` does in an interactive console.
+Invoke-RIUtilisationReport
 </script>
 
 <script>
@@ -547,28 +612,57 @@ const BRACKETS = [
   {key:'POOR',     min:40, max:60,  color:'var(--b-poor)',     hex:'#F08A3C', range:'40–59%', action:'Strong downsize / exchange candidate'},
   {key:'REVIEW',   min:60, max:80,  color:'var(--b-review)',   hex:'#F2C94C', range:'60–79%', action:'Check scope/ISF; partial downsize candidate'},
   {key:'GOOD',     min:80, max:95,  color:'var(--b-good)',     hex:'#4FC3A1', range:'80–94%', action:'Renew; minor tuning possible'},
-  {key:'OPTIMAL',  min:95, max:101, color:'var(--b-optimal)',  hex:'#3AA0FF', range:'95–100%',action:'Renew as-is'},
+  {key:'OPTIMAL',  min:95, max:Infinity, color:'var(--b-optimal)', hex:'#3AA0FF', range:'95–100%',action:'Renew as-is'},
 ];
 const NODATA = {key:'NO DATA', color:'var(--b-nodata)', hex:'#6C7A96', range:'n/a', action:'Investigate: RBAC, new RI, or reporting gap'};
 const ORDER = ['CRITICAL','POOR','REVIEW','GOOD','OPTIMAL','NO DATA'];
 
 let rows = [];            // parsed + enriched reservations
-let sortState = {};       // per-bracket sort
+let sortState = {};       // per-bracket sort: {BRACKET: {col, dir}}
 
 /* ============================ SCRIPT PANEL ============================ */
 const psRaw = document.getElementById('psScript').textContent.trim();
 document.getElementById('scriptView').textContent = psRaw;
 
 document.getElementById('copyScript').addEventListener('click', async (e)=>{
-  try{ await navigator.clipboard.writeText(psRaw); }
-  catch(_){ /* fallback */ const ta=document.createElement('textarea'); ta.value=psRaw; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
-  const b=e.currentTarget; b.textContent='Copied ✓'; b.classList.add('copied');
-  setTimeout(()=>{ b.textContent='Copy script'; b.classList.remove('copied'); },1800);
+  flashButton(e.currentTarget, 'Copied ✓', await copyText(psRaw));
 });
+/* Some browsers cancel the download if the object URL is revoked in the same tick,
+   or if the anchor was never in the document. Do both properly, once, here. */
+function downloadBlob(blob, filename){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=filename; a.rel='noopener'; a.style.display='none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 5000);
+}
+
+/* Clipboard writes reject on insecure origins and when permission is refused;
+   fall back to execCommand, and tell the user if even that fails. */
+async function copyText(text){
+  try{ await navigator.clipboard.writeText(text); return true; }
+  catch(_){
+    try{
+      const t=document.createElement('textarea');
+      t.value=text; t.setAttribute('readonly',''); t.style.position='fixed'; t.style.opacity='0';
+      document.body.appendChild(t); t.select();
+      const ok=document.execCommand('copy'); t.remove();
+      return ok;
+    }catch(__){ return false; }
+  }
+}
+
+function flashButton(btn, okText, ok){
+  const old=btn.dataset.label||btn.textContent;
+  btn.dataset.label=old;
+  btn.textContent = ok ? okText : 'Copy failed — select manually';
+  if(ok) btn.classList.add('copied');
+  setTimeout(()=>{ btn.textContent=old; btn.classList.remove('copied'); }, ok?1800:3200);
+}
+
 document.getElementById('dlScript').addEventListener('click', ()=>{
-  const blob=new Blob([psRaw],{type:'text/plain'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-  a.download='Get-RIUtilisationReport.ps1'; a.click(); URL.revokeObjectURL(a.href);
+  downloadBlob(new Blob([psRaw],{type:'text/plain'}), 'Get-RIUtilisationReport.ps1');
 });
 
 /* ============================ INPUT ============================ */
@@ -580,14 +674,32 @@ dz.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDef
 ['dragover','dragenter'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('drag');}));
 ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('drag');}));
 dz.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) readFile(f); });
-fi.addEventListener('change',()=>{ if(fi.files[0]) readFile(fi.files[0]); });
+/* fi.value is cleared so picking the same file twice still fires a change event */
+fi.addEventListener('change',()=>{ const f=fi.files[0]; fi.value=''; if(f) readFile(f); });
 
+const MAX_CSV_BYTES = 25*1024*1024;
 function readFile(f){
+  if(f.size > MAX_CSV_BYTES){
+    setMsg(`That file is ${(f.size/1048576).toFixed(1)} MB — too large to be a reservation export. Check you picked the right file.`,'err');
+    return;
+  }
+  if(!/\.csv$/i.test(f.name) && !/^text\//.test(f.type||'')){
+    setMsg(`"${f.name}" doesn't look like a CSV. Export the report with the Stage 2 script and drop the RI-Utilisation-Report_*.csv it writes.`,'err');
+    return;
+  }
   const r=new FileReader();
   r.onload=()=>{ ta.value=r.result; setMsg('File loaded — press Analyse reservations.','ok'); };
+  r.onerror=()=>{ setMsg(`Could not read "${f.name}" (${r.error&&r.error.name||'read error'}). Try opening it and pasting the contents instead.`,'err'); };
   r.readAsText(f);
 }
 function setMsg(t,cls){ msg.textContent=t; msg.className='parse-msg'+(cls?' '+cls:''); }
+
+/* Non-fatal problems: shown as a list above the decision sheet rather than swallowed. */
+function setWarnings(list){
+  const host=document.getElementById('parseWarnings');
+  host.innerHTML=list.map(w=>`<div class="warn-item">${w}</div>`).join('');
+  host.classList.toggle('show', list.length>0);
+}
 
 document.getElementById('analyseBtn').addEventListener('click',()=>{
   const raw=ta.value.trim();
@@ -600,36 +712,87 @@ document.getElementById('demoBtn').addEventListener('click',()=>{
   ta.value=sampleCsv(); setMsg('Sample data loaded — press Analyse reservations.','ok');
 });
 function sampleCsv(){
-  return `"Bracket","DisplayName","Sku","ResourceType","Location","Quantity","Term","InstanceFlexibility","AppliedScopeType","Avg30d%","Avg7d%","MinDay%","MaxDay%","ReservedHours30d","UsedHours30d","DataDays","ExpiryDate","DaysToExpiry","AutoRenew","SuggestedAction","Note","ReservationOrderId","ReservationId"
-"CRITICAL","SQL-Reporting-RI","Standard_E8s_v5","VirtualMachines","uksouth","2","P3Y","On","Shared","22.4","18.1","0","61","1440","323","30","2026-09-30T00:00:00","42","True","","","aaaa1111","r-01"
-"POOR","Legacy-App-RI","Standard_D4s_v3","VirtualMachines","ukwest","6","P1Y","Off","Single","48.6","51.2","30.5","70.2","4320","2100","30","2026-10-14T00:00:00","56","False","","","aaaa2222","r-02"
-"REVIEW","AKS-NodePool-RI","Standard_D8s_v5","VirtualMachines","uksouth","10","P3Y","On","Shared","71.3","76.8","55","92","7200","5134","30","2026-11-02T00:00:00","75","True","","","aaaa3333","r-03"
-"REVIEW","Files-Premium-RI","premium_ssd_managed_disks_p30","ManagedDisk","uksouth","4","P1Y","","Shared","64.0","58.9","40","81","2880","1843","30","2027-02-11T00:00:00","176","False","","","aaaa4444","r-04"
-"GOOD","Web-Farm-RI","Standard_D4as_v5","VirtualMachines","uksouth","12","P3Y","On","Shared","88.9","91.4","72","100","8640","7681","30","2026-09-08T00:00:00","20","True","","","aaaa5555","r-05"
-"OPTIMAL","Domain-Controllers-RI","Standard_B2ms","VirtualMachines","uksouth","3","P3Y","On","Shared","99.8","100","98","100","2160","2156","30","2026-12-01T00:00:00","104","True","","","aaaa6666","r-06"
-"OPTIMAL","SQL-MI-Compute-RI","SQLMI_GP_Gen5","SqlDataBase","uksouth","8","P3Y","","Shared","97.2","96.5","91","100","5760","5599","30","2027-05-20T00:00:00","274","False","","","aaaa7777","r-07"
-"NO DATA","New-Purchase-RI","Standard_F8s_v2","VirtualMachines","ukwest","2","P1Y","On","Single","","","","","0","0","0","2027-08-01T00:00:00","347","False","","No summaries returned","aaaa8888","r-08"`;
+  /* Expiry dates are generated relative to today so the demo keeps showing a
+     realistic renewal window instead of drifting into the past as the file ages.
+     DaysToExpiry is deliberately left out: the page recomputes it from ExpiryDate. */
+  const iso=d=>{ const x=new Date(); x.setUTCHours(0,0,0,0); x.setUTCDate(x.getUTCDate()+d); return x.toISOString().slice(0,19); };
+  const hdr='"Bracket","DisplayName","Sku","ResourceType","Location","Quantity","Term","InstanceFlexibility","AppliedScopeType","Avg30d%","Avg7d%","MinDay%","MaxDay%","ReservedHours30d","UsedHours30d","DataDays","ExpiryDate","AutoRenew","SuggestedAction","Note","ReservationOrderId","ReservationId"';
+  const rows=[
+    ['CRITICAL','SQL-Reporting-RI','Standard_E8s_v5','VirtualMachines','uksouth','2','P3Y','On','Shared','22.4','18.1','0','61','1440','323','30',42,'True','','','aaaa1111','r-01'],
+    ['POOR','Legacy-App-RI','Standard_D4s_v3','VirtualMachines','ukwest','6','P1Y','Off','Single','48.6','51.2','30.5','70.2','4320','2100','30',56,'False','','','aaaa2222','r-02'],
+    ['REVIEW','AKS-NodePool-RI','Standard_D8s_v5','VirtualMachines','uksouth','10','P3Y','On','Shared','71.3','76.8','55','92','7200','5134','30',75,'True','','','aaaa3333','r-03'],
+    ['REVIEW','Files-Premium-RI','premium_ssd_managed_disks_p30','ManagedDisk','uksouth','4','P1Y','','Shared','64.0','58.9','40','81','2880','1843','30',176,'False','','','aaaa4444','r-04'],
+    ['GOOD','Web-Farm-RI','Standard_D4as_v5','VirtualMachines','uksouth','12','P3Y','On','Shared','88.9','91.4','72','100','8640','7681','30',20,'True','','','aaaa5555','r-05'],
+    ['OPTIMAL','Domain-Controllers-RI','Standard_B2ms','VirtualMachines','uksouth','3','P3Y','On','Shared','99.8','100','98','100','2160','2156','30',104,'True','','','aaaa6666','r-06'],
+    ['OPTIMAL','SQL-MI-Compute-RI','SQLMI_GP_Gen5','SqlDataBase','uksouth','8','P3Y','','Shared','97.2','96.5','91','100','5760','5599','30',274,'False','','','aaaa7777','r-07'],
+    ['NO DATA','New-Purchase-RI','Standard_F8s_v2','VirtualMachines','ukwest','2','P1Y','On','Single','','','','','0','0','0',347,'False','','No summaries returned','aaaa8888','r-08'],
+  ].map(c=>c.map((v,i)=>i===16?'"'+iso(v)+'"':'"'+v+'"').join(','));
+  return [hdr,...rows].join('\n');
 }
 
 /* ============================ PARSE + ENRICH ============================ */
 function num(v){ if(v===undefined||v===null) return null; const s=String(v).trim(); if(s==='') return null; const n=parseFloat(s.replace('%','')); return isNaN(n)?null:n; }
 function str(v){ return v===undefined||v===null ? '' : String(v).trim(); }
 function truthy(v){ return /^true$/i.test(str(v)); }
+function parseDate(v){ const s=str(v); if(!s) return null; const d=new Date(s); return isNaN(d.getTime())?null:d; }
+
+/* parseFloat reads "71,3" as 71 and "1.234,5" as 1.234 — a European-locale Excel
+   round-trip would silently halve the fleet's utilisation rather than fail loudly. */
+const LOCALE_DECIMAL = /^-?\d{1,3}(\.\d{3})*,\d+$|^-?\d+,\d+$/;
+function looksLocaleFormatted(v){ return LOCALE_DECIMAL.test(str(v)); }
+
+const REQUIRED = ['DisplayName'];
+const EXPECTED = ['Avg30d%','Quantity','ExpiryDate','AutoRenew','Sku'];
 
 function parseCsv(raw){
   const res=Papa.parse(raw,{header:true,skipEmptyLines:'greedy',transformHeader:h=>h.replace(/^\uFEFF/,'').trim()});
-  if(!res.data.length){ setMsg('Could not read any rows — is this the CSV from the script?','err'); return; }
+  if(!res.data.length){ setMsg('Could not read any rows — is this the CSV from the script?','err'); setWarnings([]); return; }
   const hdrs=res.meta.fields||[];
-  const need=['DisplayName'];
-  if(!need.every(h=>hdrs.includes(h))){
-    setMsg('Missing expected columns (need at least DisplayName, Avg30d%, Quantity). Check you exported with the workbench script.','err'); return;
+
+  const missingRequired=REQUIRED.filter(h=>!hdrs.includes(h));
+  if(missingRequired.length){
+    setMsg(`Missing required column${missingRequired.length===1?'':'s'}: ${missingRequired.join(', ')}. Check you exported with the workbench script.`,'err');
+    setWarnings([]); return;
   }
+
+  const warn=[];
+  /* #15: surface Papa's row errors instead of quietly analysing a subset */
+  const errs=res.errors||[];
+  if(errs.length){
+    const shown=errs.slice(0,3).map(e=>`row ${e.row===undefined?'?':e.row+2}: ${esc(e.message)}`).join('; ');
+    warn.push(`<b>${errs.length} row${errs.length===1?'':'s'} did not parse cleanly</b> and may be missing or misaligned below — ${shown}${errs.length>3?' …':''}.`);
+  }
+  const missingExpected=EXPECTED.filter(h=>!hdrs.includes(h));
+  if(missingExpected.length){
+    warn.push(`<b>Columns not present:</b> ${missingExpected.map(esc).join(', ')}. Those fields will show as “—”. This CSV may predate the current export script.`);
+  }
+
   rows=res.data.filter(r=>str(r.DisplayName)!=='').map(enrich);
-  if(!rows.length){ setMsg('No reservation rows found in the CSV.','err'); return; }
-  setMsg(`Parsed ${rows.length} reservation${rows.length===1?'':'s'}.`,'ok');
+  if(!rows.length){ setMsg('No reservation rows found in the CSV.','err'); setWarnings([]); return; }
+
+  /* #14: locale-formatted decimals parse to the wrong number rather than failing */
+  const localeHit=res.data.find(r=>looksLocaleFormatted(r['Avg30d%'])||looksLocaleFormatted(r['Avg7d%']));
+  if(localeHit){
+    warn.push(`<b>Comma decimal separators detected</b> (e.g. “${esc(str(localeHit['Avg30d%'])||str(localeHit['Avg7d%']))}”). This CSV has been re-saved by a non-English Excel, and the utilisation figures below will be wrong. Re-run the export and analyse the original file.`);
+  }
+
+  /* #5: the page recomputes brackets from Avg30d%; if the script ran with different
+     thresholds or $BracketBy='Avg7', its Bracket column will disagree. Say so. */
+  const drift=rows.filter(r=>{ const csvB=str(r.Bracket).toUpperCase(); return csvB && csvB!==r.bracket.key; });
+  if(drift.length){
+    warn.push(`<b>${drift.length} of ${rows.length} reservations are bracketed differently in the CSV</b> than on this page (e.g. “${esc(str(drift[0].DisplayName))}” is ${esc(str(drift[0].Bracket))} in the file, ${drift[0].bracket.key} here). The page always recomputes from the 30-day average using the thresholds in the footer — if you changed the thresholds or set <code>$BracketBy = 'Avg7'</code> in the script, the page's brackets are the ones shown below.`);
+  }
+
+  setWarnings(warn);
+  setMsg(`Parsed ${rows.length} reservation${rows.length===1?'':'s'}.${warn.length?` ${warn.length} warning${warn.length===1?'':'s'} — see below.`:''}`, warn.length?'':'ok');
   render();
   document.getElementById('results').style.display='block';
-  document.getElementById('results').scrollIntoView({behavior:'smooth'});
+  document.getElementById('results').scrollIntoView(prefersReducedMotion()?{}:{behavior:'smooth'});
+}
+
+/* The CSS honours prefers-reduced-motion; scrollIntoView has to be told separately. */
+function prefersReducedMotion(){
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 function bracketFor(util){
@@ -642,7 +805,14 @@ function enrich(r){
   const driver=avg30!==null?avg30:avg7;           // fall back to 7d if 30d missing
   const b=bracketFor(driver);
   const qty=num(r.Quantity)||0;
-  const days=num(r.DaysToExpiry);
+  /* #3: DaysToExpiry in the CSV was computed when the export ran. Analysing a
+     three-week-old export would otherwise report a long-gone deadline as current,
+     so recompute from ExpiryDate and only fall back to the stored column. */
+  const expiryDate=parseDate(r.ExpiryDate);
+  const days = expiryDate!==null
+    ? Math.floor((expiryDate.getTime()-Date.now())/86400000)
+    : num(r.DaysToExpiry);
+  const daysStale = expiryDate===null && num(r.DaysToExpiry)!==null;
   const auto=truthy(r.AutoRenew);
   const isf=str(r.InstanceFlexibility);
   const scope=str(r.AppliedScopeType);
@@ -681,11 +851,16 @@ function enrich(r){
     rec.push('No utilisation data returned — check RBAC on this order, or the RI is too new to report.');
   }
   if(auto && driver!==null && driver<80) rec.push('<b>Auto-renew is ON</b> for an under-utilised RI — the classic renewal trap. Disable until the decision is made.');
-  if(days!==null && days<=90) rec.push(`Expires in <b>${days} day${days===1?'':'s'}</b> — decision needed this cycle.`);
+  if(days!==null && days<0) rec.push(`<b>Already expired</b> ${Math.abs(days)} day${days===-1?'':'s'} ago${auto?' — check whether auto-renew has already repurchased it':''}.`);
+  else if(days!==null && days===0) rec.push('<b>Expires today</b> — decision needed now.');
+  else if(days!==null && days<=90) rec.push(`Expires in <b>${days} day${days===1?'':'s'}</b> — decision needed this cycle.`);
   if(trend!==null && Math.abs(trend)>=10) rec.push(trend>0?`Trending up (+${trend.toFixed(1)} pts vs 30d) — recent fix may already be working.`:`Trending down (${trend.toFixed(1)} pts vs 30d) — recent change is reducing usage.`);
 
   return {
-    ...r, avg30, avg7, driver, bracket:b, qty, days, auto, isf, scope, trend, suggQty,
+    ...r, avg30, avg7, driver, bracket:b, qty, days, daysStale, auto, isf, scope, trend, suggQty,
+    /* INVARIANT: recommendation is inserted with innerHTML. Every value interpolated
+       into rec[] above is a number derived from num(), never a string from the CSV.
+       If you ever need to interpolate a CSV field here, wrap it in esc(). */
     recommendation:rec.join(' '),
     note:str(r.Note)
   };
@@ -702,21 +877,30 @@ function render(){
   const totUsed=rows.reduce((a,r)=>a+(num(r.UsedHours30d)||0),0);
   const fleet= totRes>0 ? (totUsed/totRes*100) : null;
   const expSoon=rows.filter(r=>r.days!==null&&r.days<=90).length;
-  const actionable=rows.filter(r=>['CRITICAL','POOR','REVIEW'].includes(r.bracket.key)).length;
-  const idleUnits=rows.reduce((a,r)=>a+(r.suggQty!==null?(r.qty-r.suggQty):0),0);
+  const ACTIONABLE=['CRITICAL','POOR','REVIEW'];
+  const actionable=rows.filter(r=>ACTIONABLE.includes(r.bracket.key)).length;
+  /* Only count units the page actually recommends shedding. Summing across every
+     bracket previously counted GOOD reservations, whose own recommendation is
+     "renew, utilisation is healthy" — a headline that argued with the table. */
+  const idleUnits=rows.reduce((a,r)=>a+(ACTIONABLE.includes(r.bracket.key)&&r.suggQty!==null?(r.qty-r.suggQty):0),0);
 
   document.getElementById('kpis').innerHTML=`
     <div class="kpi"><div class="v">${rows.length}</div><div class="l">Reservations</div></div>
     <div class="kpi"><div class="v" style="color:${fleet===null?'var(--muted)':fleet>=80?'var(--b-good)':fleet>=60?'var(--b-review)':'var(--b-critical)'}">${fleet===null?'—':fleet.toFixed(1)+'%'}</div><div class="l">Fleet utilisation · 30d</div></div>
     <div class="kpi"><div class="v" style="color:${actionable?'var(--b-poor)':'var(--b-good)'}">${actionable}</div><div class="l">Need action (≤79%)</div></div>
     <div class="kpi"><div class="v" style="color:${expSoon?'var(--b-review)':'var(--text)'}">${expSoon}</div><div class="l">Expire ≤ 90 days</div></div>
-    <div class="kpi"><div class="v" style="color:${idleUnits?'var(--b-critical)':'var(--b-good)'}">${idleUnits}</div><div class="l">Idle units to shed</div></div>`;
+    <div class="kpi" title="Units the page recommends dropping across the CRITICAL, POOR and REVIEW groups. Reservations in GOOD and OPTIMAL are counted as renew-as-is."><div class="v" style="color:${idleUnits?'var(--b-critical)':'var(--b-good)'}">${idleUnits}</div><div class="l">Idle units to shed</div></div>`;
 
+  const staleCount=rows.filter(r=>r.daysStale).length;
   document.getElementById('resultsSub').textContent=
-    `${withData.length} of ${rows.length} reservations returned utilisation data. Brackets are driven by the 30-day hour-weighted average (falls back to 7-day where 30-day is missing).`;
+    `${withData.length} of ${rows.length} reservations returned utilisation data. Brackets are driven by the 30-day hour-weighted average (falls back to 7-day where 30-day is missing). `+
+    (staleCount
+      ? `${staleCount} reservation${staleCount===1?' has no':'s have no'} ExpiryDate column, so ${staleCount===1?'its':'their'} countdown is the one recorded when the export ran.`
+      : `Days-to-expiry is recalculated from ExpiryDate as of today, not read from the export.`);
   document.getElementById('specDriver').textContent='driver: Avg30d% (fallback Avg7d%)';
 
   openState=null;               // fresh dataset -> default expand actionable groups
+  sortState={};                 // ...and default sort order, not the last dataset's
   renderSpectrum();
   renderBrackets();
 }
@@ -735,12 +919,16 @@ function renderSpectrum(){
     const d=document.createElement('div'); d.className='spec-tick'; d.style.left=t+'%'; d.textContent=t;
     el.appendChild(d);
   });
-  /* dots with slight vertical jitter to reduce overlap */
+  /* Dots are jittered within their own 2%-wide cluster rather than by global index,
+     so a fleet bunched at 95-100% fans out instead of stacking on one pixel column. */
   const withData=rows.filter(r=>r.driver!==null);
-  withData.forEach((r,i)=>{
+  const seen={};
+  withData.forEach((r)=>{
+    const k=Math.round(Math.min(r.driver,100)/2);
+    const n=(seen[k]=(seen[k]||0)+1)-1;
     const dot=document.createElement('button'); dot.className='spec-dot'; dot.type='button';
     dot.style.left=Math.min(r.driver,100)+'%';
-    dot.style.top=(22 - (i%3)*7)+'px';
+    dot.style.top=(22 - (n%4)*7)+'px';
     dot.style.background=r.bracket.hex;
     dot.setAttribute('aria-label',`${str(r.DisplayName)}: ${r.driver}%`);
     const lab=document.createElement('div'); lab.className='spec-label';
@@ -751,6 +939,17 @@ function renderSpectrum(){
 }
 
 let openState=null;   // remembers which groups the user expanded across re-renders
+
+/* The rows for one bracket, in the order that bracket is currently sorted.
+   renderBrackets used to rebuild this straight from rows.filter() and never apply
+   sortState, so clicking a header only ever flipped the arrow. */
+function rowsFor(key){
+  const grp=rows.filter(r=>r.bracket.key===key);
+  const st=sortState[key];
+  if(st) grp.sort((a,b)=>cmp(a,b,st.col,st.dir));
+  return grp;
+}
+
 function renderBrackets(){
   const host=document.getElementById('brackets');
   if(openState===null){ openState={}; ORDER.forEach(k=>openState[k]=['CRITICAL','POOR','REVIEW'].includes(k)); }
@@ -758,7 +957,7 @@ function renderBrackets(){
   host.innerHTML='';
   ORDER.forEach(key=>{
     const meta= key==='NO DATA' ? NODATA : BRACKETS.find(b=>b.key===key);
-    const grp=rows.filter(r=>r.bracket.key===key);
+    const grp=rowsFor(key);
     if(!grp.length) return;
     const open=openState[key];
     const block=document.createElement('div'); block.className='bracket-block'+(open?' open':'');
@@ -771,25 +970,31 @@ function renderBrackets(){
         <span class="bracket-act">${meta.action}</span>
         <span class="bracket-count">${grp.length}</span>
       </div>
-      <div class="bracket-body">${tableFor(grp,key)}</div>`;
+      <div class="bracket-body"><div class="table-scroll">${tableFor(grp,key)}</div></div>`;
     const head=block.querySelector('.bracket-head');
     const toggle=()=>{ block.classList.toggle('open'); head.setAttribute('aria-expanded',block.classList.contains('open')); };
     head.addEventListener('click',toggle);
     head.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();} });
     host.appendChild(block);
-    /* header sorting */
-    block.querySelectorAll('th[data-sort]').forEach(th=>{
-      th.addEventListener('click',()=>{
-        const col=th.dataset.sort;
-        const cur=sortState[key]||{};
-        const dir= cur.col===col && cur.dir==='asc' ? 'desc':'asc';
-        sortState[key]={col,dir};
-        grp.sort((a,b)=>cmp(a,b,col,dir));
-        block.querySelector('.bracket-body').innerHTML=tableFor(grp,key);
-        /* re-bind after rerender */
-        renderBrackets();
-      });
-    });
+    bindSortHeaders(block,key);
+  });
+}
+
+/* Repaints one bracket's table in place. Rebuilding every block here (as the old
+   code did by calling renderBrackets) discarded the sort that had just been applied. */
+function bindSortHeaders(block,key){
+  block.querySelectorAll('th[data-sort]').forEach(th=>{
+    const activate=()=>{
+      const col=th.dataset.sort;
+      const cur=sortState[key]||{};
+      sortState[key]={col, dir: cur.col===col && cur.dir==='asc' ? 'desc' : 'asc'};
+      block.querySelector('.bracket-body').innerHTML=`<div class="table-scroll">${tableFor(rowsFor(key),key)}</div>`;
+      bindSortHeaders(block,key);
+      const again=block.querySelector(`th[data-sort="${col}"]`);
+      if(again) again.focus();
+    };
+    th.addEventListener('click',activate);
+    th.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); activate(); } });
   });
 }
 
@@ -810,13 +1015,18 @@ function cmp(a,b,col,dir){
 
 function tableFor(grp,key){
   const s=sortState[key]||{};
-  const arrow=c=> s.col===c ? `<span class="arrow">${s.dir==='asc'?'▲':'▼'}</span>` : '';
+  const arrow=c=> s.col===c ? `<span class="arrow" aria-hidden="true">${s.dir==='asc'?'▲':'▼'}</span>` : '';
+  /* aria-sort is what tells a screen reader the column is sortable and how it is sorted;
+     role/tabindex make the header reachable without a mouse. */
+  const sortAttrs=c=>`data-sort="${c}" role="button" tabindex="0" aria-sort="${s.col===c?(s.dir==='asc'?'ascending':'descending'):'none'}"`;
   const rowsHtml=grp.map(r=>{
     const util=r.driver;
     const flags=[];
     if(r.auto && util!==null && util<80) flags.push('<span class="tag hot">AUTO-RENEW ON</span>');
     else if(r.auto) flags.push('<span class="tag">auto-renew</span>');
-    if(r.days!==null&&r.days<=90) flags.push(`<span class="tag warn">expires ${r.days}d</span>`);
+    if(r.days!==null&&r.days<0) flags.push(`<span class="tag hot">expired ${Math.abs(r.days)}d ago</span>`);
+    else if(r.days!==null&&r.days<=90) flags.push(`<span class="tag warn">expires ${r.days}d</span>`);
+    if(r.daysStale) flags.push('<span class="tag">expiry as at export</span>');
     if(r.scope==='Single') flags.push('<span class="tag">single scope</span>');
     if(/off/i.test(r.isf)) flags.push('<span class="tag">ISF off</span>');
     if(r.note) flags.push(`<span class="tag">${esc(r.note)}</span>`);
@@ -832,17 +1042,17 @@ function tableFor(grp,key){
         <div class="util-bar"><div class="util-fill" style="width:${util===null?0:Math.min(util,100)}%;background:${r.bracket.hex}"></div></div>
       </td>
       <td class="num">${qtyCell}</td>
-      <td class="num">${r.days===null?'—':r.days+'d'}</td>
+      <td class="num">${r.days===null?'—':(r.days<0?'−'+Math.abs(r.days)+'d':r.days+'d')}</td>
       <td>${flags.join(' ')||'—'}</td>
       <td class="rec-cell">${r.recommendation}</td>
     </tr>`;
   }).join('');
   return `<table>
     <thead><tr>
-      <th data-sort="name">Reservation${arrow('name')}</th>
-      <th data-sort="util">Utilisation · 30d${arrow('util')}</th>
-      <th data-sort="qty">Qty → suggested${arrow('qty')}</th>
-      <th data-sort="exp">Expiry${arrow('exp')}</th>
+      <th ${sortAttrs('name')}>Reservation${arrow('name')}</th>
+      <th ${sortAttrs('util')}>Utilisation · 30d${arrow('util')}</th>
+      <th ${sortAttrs('qty')}>Qty → suggested${arrow('qty')}</th>
+      <th ${sortAttrs('exp')}>Expiry${arrow('exp')}</th>
       <th>Flags</th>
       <th>Recommendation</th>
     </tr></thead>
@@ -850,6 +1060,16 @@ function tableFor(grp,key){
 }
 
 /* ============================ EXPORT ============================ */
+/* #11: Excel, Sheets and LibreOffice execute a cell that opens with = + - @ (or a
+   leading control char). DisplayName comes from the customer's tenant, so a
+   reservation named =HYPERLINK(...) would fire when the consultant opens this file.
+   Papa.unparse quotes correctly but does nothing about that, so neutralise it here. */
+function csvSafe(v){
+  if(v===null||v===undefined) return v;
+  if(typeof v!=='string') return v;
+  return /^[=+\-@\t\r]/.test(v) ? "'"+v : v;
+}
+
 document.getElementById('exportCsv').addEventListener('click',()=>{
   const out=rows.map(r=>({
     Bracket:r.bracket.key, DisplayName:str(r.DisplayName), Sku:str(r.Sku),
@@ -861,11 +1081,11 @@ document.getElementById('exportCsv').addEventListener('click',()=>{
     Recommendation:r.recommendation.replace(/<[^>]+>/g,''), Note:r.note,
     ReservationOrderId:str(r.ReservationOrderId), ReservationId:str(r.ReservationId)
   }));
-  const csv=Papa.unparse(out);
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
-  a.download='RI-Renewal-Decisions_'+new Date().toISOString().slice(0,10)+'.csv';
-  a.click(); URL.revokeObjectURL(a.href);
+  const safe=out.map(o=>Object.fromEntries(Object.entries(o).map(([k,v])=>[k,csvSafe(v)])));
+  const csv=Papa.unparse(safe);
+  /* BOM so Excel reads the file as UTF-8 rather than the local ANSI codepage */
+  downloadBlob(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'}),
+               'RI-Renewal-Decisions_'+new Date().toISOString().slice(0,10)+'.csv');
 });
 
 document.getElementById('copySummary').addEventListener('click',async(e)=>{
@@ -881,9 +1101,7 @@ document.getElementById('copySummary').addEventListener('click',async(e)=>{
     lines.push('');
   });
   const txt=lines.join('\n');
-  try{ await navigator.clipboard.writeText(txt);}catch(_){}
-  const b=e.currentTarget; const old=b.textContent; b.textContent='Copied ✓';
-  setTimeout(()=>b.textContent=old,1600);
+  flashButton(e.currentTarget, 'Copied ✓', await copyText(txt));
 });
 </script>
 </body>

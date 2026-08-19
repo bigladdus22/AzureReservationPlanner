@@ -1,0 +1,35 @@
+customHeaders:
+  - pattern: '**'
+    headers:
+      # The page loads its stylesheet, script and fonts from this origin only, and never
+      # makes a network request of its own. connect-src 'none' is what turns "reservation
+      # data never leaves the browser" from a claim into something the browser enforces:
+      # even if the page were modified, it has no channel to send a parsed CSV anywhere.
+      # 'unsafe-inline' is still required for script-src because the analyser and the
+      # PowerShell payload live in inline <script> blocks in index.html.
+      - key: Content-Security-Policy
+        value: "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'none'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
+      - key: X-Content-Type-Options
+        value: 'nosniff'
+      - key: Referrer-Policy
+        value: 'no-referrer'
+      - key: Permissions-Policy
+        value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()'
+      - key: Strict-Transport-Security
+        value: 'max-age=31536000; includeSubDomains'
+      - key: Cross-Origin-Opener-Policy
+        value: 'same-origin'
+
+  # Fonts and the pinned PapaParse build are immutable: their contents only change
+  # when the filename changes in a commit, so they can be cached hard.
+  - pattern: '/vendor/**'
+    headers:
+      - key: Cache-Control
+        value: 'public, max-age=31536000, immutable'
+
+  # The page itself must not be served stale, or a consultant keeps getting the old
+  # analyser after a fix ships.
+  - pattern: '/index.html'
+    headers:
+      - key: Cache-Control
+        value: 'public, max-age=0, must-revalidate'

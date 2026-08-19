@@ -6,7 +6,13 @@ No backend, no build step, no telemetry. **Reservation data never leaves the bro
 
 ## Live site
 
-Hosted on GitHub Pages from this repo. To deploy your own copy: fork or clone, keep `index.html` at the repo root, then enable **Settings → Pages → Deploy from a branch → main**. The site is served at `https://<username>.github.io/<repo>/`.
+Deployed on **AWS Amplify Hosting** from `main`. `customHttp.yml` at the repo root supplies the response headers Amplify serves with the site — a strict Content Security Policy (`default-src 'none'`, `connect-src 'none'`), `nosniff`, `no-referrer`, HSTS, and long-lived caching for `vendor/` with a must-revalidate `index.html`.
+
+`connect-src 'none'` is the point worth understanding: the page loads every asset from its own origin and makes no network request of its own, so the browser itself blocks any attempt to send parsed reservation data anywhere. That turns "reservation data never leaves the browser" from a promise into something enforced.
+
+The `.github/workflows/static.yml` workflow also publishes the same commit to GitHub Pages, which is a **mirror** — useful for a quick preview, but it does not apply `customHttp.yml`, so the Pages copy is served without those headers. Amplify is the canonical deployment. Delete the workflow if you don't want the mirror.
+
+To deploy your own copy: fork or clone, keep `index.html` and `vendor/` at the repo root, and point Amplify at the branch with no build command and `/` as the output directory.
 
 ## How the workflow runs
 
@@ -33,10 +39,12 @@ The page also shows the exact `Microsoft.Capacity/reservationOrders/reservations
 - **Summary KPIs** — reservation count, fleet-wide 30-day utilisation, how many reservations need action, how many expire within 90 days, and total idle units to shed at renewal.
 - **Utilisation spectrum** — a 0–100% ruler with one dot per reservation, so the shape of the whole estate is visible at a glance.
 - **Bracket groups** — collapsible, colour-coded tables (actionable groups expanded by default), sortable by name, utilisation, quantity or expiry.
-- **Per-reservation recommendations** — including a suggested renewal quantity (`10 → 7` style, computed as ⌈quantity × utilisation⌉), and flags for the common traps: auto-renew enabled on an under-utilised RI, Single scope, instance size flexibility off, and imminent expiry. Recommendations check scope and ISF *before* suggesting a downsize, because low utilisation is often a scope or SKU-match problem rather than a sizing one.
-- **Exports** — an annotated decisions CSV and a copyable plain-text summary for email.
+- **Per-reservation recommendations** — including a suggested renewal quantity (`10 → 7` style, computed as ⌈quantity × utilisation⌉), and flags for the common traps: auto-renew enabled on an under-utilised RI, Single scope, instance size flexibility off, and imminent expiry. **Days-to-expiry is recalculated from `ExpiryDate` when you analyse**, not read from the export's `DaysToExpiry` column, so a CSV analysed three weeks after it was generated still shows a correct countdown; reservations already past their expiry date are flagged as such. Recommendations check scope and ISF *before* suggesting a downsize, because low utilisation is often a scope or SKU-match problem rather than a sizing one.
+- **Exports** — an annotated decisions CSV and a copyable plain-text summary for email. Exported fields that begin with `=`, `+`, `-` or `@` are prefixed with an apostrophe so a reservation named like a formula cannot execute when the file is opened in Excel or Sheets.
 
-A **Load sample data** button fills the analyser with realistic dummy reservations, useful for demoing the workflow before the customer has run anything.
+A **Load sample data** button fills the analyser with realistic dummy reservations, useful for demoing the workflow before the customer has run anything. Its expiry dates are generated relative to today, so the demo keeps showing a realistic renewal window however old this repo gets.
+
+Anything that could quietly skew the review is reported above the results rather than swallowed: rows that failed to parse, expected columns missing from the CSV, brackets that disagree with the export, and comma decimal separators (the signature of a CSV re-saved by a non-English Excel, which would otherwise make `71,3` parse as `71`).
 
 ## Utilisation brackets
 
@@ -49,20 +57,32 @@ A **Load sample data** button fills the analyser with realistic dummy reservatio
 | CRITICAL | 0–39% | Do not renew at current quantity; exchange or drop |
 | NO DATA | n/a | Investigate: RBAC gap, very new RI, or reporting issue |
 
-Brackets are driven by the 30-day hour-weighted average (falling back to the 7-day figure where 30-day data is missing). Thresholds are defined once in the script and mirrored in the page's JavaScript, so both stay in step if you adjust them.
+Brackets are driven by the 30-day hour-weighted average (falling back to the 7-day figure where 30-day data is missing).
+
+The thresholds exist in two places — the script's CONFIG block and the page's JavaScript — and the page always recomputes brackets from `Avg30d%` rather than trusting the CSV's `Bracket` column. If you change the thresholds in one place only, or set `$BracketBy = 'Avg7'` in the script, the page will say so: it compares its own bracketing against the CSV's and warns above the results wherever the two disagree. The brackets shown on the page are the ones being applied.
 
 ## Repo contents
 
 ```
-index.html    The entire tool: page, styles, embedded PowerShell script, analyser JS
-README.md     This file
+index.html               The tool: page, styles, embedded PowerShell script, analyser JS
+customHttp.yml           Response headers Amplify serves with the site (CSP, HSTS, caching)
+vendor/papaparse.min.js  PapaParse 5.4.1, pinned and self-hosted
+vendor/fonts.css         @font-face declarations for the three families
+vendor/fonts/            woff2 subsets (latin, latin-ext)
+README.md                This file
 ```
 
 The PowerShell script lives inside `index.html` in a `<script type="text/plain">` block and is surfaced through the Copy and Download-.ps1 buttons — there is intentionally no separate `.ps1` in the repo, so the page and the script can never drift apart.
 
 ## Dependencies
 
-Two CDN resources, both loaded by the page: [PapaParse](https://www.papaparse.com/) 5.4.1 for CSV parsing and Google Fonts (Space Grotesk, IBM Plex Mono, Inter). Everything else is vanilla HTML/CSS/JS. The Cloud Shell script uses `Az.Reservations` and `Az.Billing`, both preinstalled in Azure Cloud Shell.
+**No third-party requests.** [PapaParse](https://www.papaparse.com/) 5.4.1 (MIT) and the three typefaces — Space Grotesk, IBM Plex Mono and Inter, all SIL OFL 1.1 — are vendored under `vendor/` and served from the site's own origin. Licence texts sit alongside them in `vendor/papaparse-LICENSE.txt` and `vendor/fonts-LICENSE.txt`.
+
+This matters for more than tidiness: the page handles customer billing data, and a script fetched from a CDN executes with full access to it. Self-hosting removes that trust dependency and is what makes the `connect-src 'none'` policy above possible. Everything else is vanilla HTML/CSS/JS with no build step.
+
+Only the `latin` and `latin-ext` font subsets are included, so a reservation named in a non-Latin script renders in the fallback stack rather than pulling a font from the network.
+
+The Cloud Shell script uses `Az.Reservations` and `Az.Billing`, both preinstalled in Azure Cloud Shell. Note that `Az.Reservations` is published as a **preview** module, so the properties it returns can be renamed between versions; the script reads every field through a `Get-Prop` helper that tries known aliases and degrades to a blank column rather than failing.
 
 ## Disclaimer
 

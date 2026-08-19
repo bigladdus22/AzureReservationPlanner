@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RI Renewal Workbench — Azure Reserved Instance utilisation review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+:root{
+  --ink:#0E1420;          /* page base */
+  --panel:#151C2B;        /* card surface */
+  --panel-2:#1B2436;      /* raised surface */
+  --line:#26314A;         /* hairlines */
+  --text:#E8EDF6;
+  --muted:#8FA0BC;
+  --faint:#5C6B87;
+  /* bracket bands — functional palette */
+  --b-critical:#F4577A;
+  --b-poor:#F08A3C;
+  --b-review:#F2C94C;
+  --b-good:#4FC3A1;
+  --b-optimal:#3AA0FF;
+  --b-nodata:#6C7A96;
+  --term-green:#7EE787;   /* terminal accent */
+  --radius:10px;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --disp:'Space Grotesk',sans-serif;
+  --body:'Inter',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto} *,*::before,*::after{animation:none!important;transition:none!important}}
+body{background:var(--ink);color:var(--text);font-family:var(--body);font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:var(--b-optimal)}
+:focus-visible{outline:2px solid var(--b-optimal);outline-offset:2px;border-radius:4px}
+
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px}
+
+/* ---------- header ---------- */
+header{border-bottom:1px solid var(--line);padding:44px 0 36px;
+  background:
+    linear-gradient(180deg, rgba(58,160,255,.06), transparent 55%),
+    repeating-linear-gradient(90deg, transparent 0 119px, rgba(38,49,74,.5) 119px 120px);
+}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-bottom:14px}
+h1{font-family:var(--disp);font-weight:700;font-size:clamp(30px,4.5vw,46px);letter-spacing:-.015em;line-height:1.05}
+h1 .util{color:var(--b-good)}
+.lede{color:var(--muted);max-width:64ch;margin-top:14px}
+.flow{display:flex;gap:0;margin-top:30px;flex-wrap:wrap}
+.flow a{display:flex;align-items:center;gap:10px;color:var(--text);text-decoration:none;
+  font-family:var(--mono);font-size:12.5px;padding:9px 18px;border:1px solid var(--line);
+  background:var(--panel);position:relative}
+.flow a:first-child{border-radius:8px 0 0 8px}
+.flow a:last-child{border-radius:0 8px 8px 0}
+.flow a + a{border-left:none}
+.flow a:hover{background:var(--panel-2)}
+.flow .n{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;
+  background:var(--panel-2);border:1px solid var(--line);font-size:11px;color:var(--muted)}
+
+/* ---------- sections ---------- */
+section{padding:52px 0;border-bottom:1px solid var(--line)}
+.sec-head{display:flex;align-items:baseline;gap:16px;margin-bottom:8px}
+.sec-head .stage{font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.12em}
+h2{font-family:var(--disp);font-weight:600;font-size:24px;letter-spacing:-.01em}
+.sec-sub{color:var(--muted);max-width:70ch;margin-bottom:26px}
+
+/* ---------- access cards ---------- */
+.roles{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.role-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px}
+.role-card h3{font-family:var(--disp);font-size:15.5px;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:9px}
+.badge{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;padding:3px 8px;border-radius:99px;border:1px solid}
+.badge.rec{color:var(--b-good);border-color:var(--b-good)}
+.badge.alt{color:var(--muted);border-color:var(--line)}
+.role-card p{color:var(--muted);font-size:13.5px}
+.role-card code{font-family:var(--mono);font-size:12.5px;color:var(--text);background:var(--panel-2);padding:1px 6px;border-radius:5px;border:1px solid var(--line)}
+.callout{margin-top:16px;background:rgba(242,201,76,.06);border:1px solid rgba(242,201,76,.35);border-radius:var(--radius);padding:14px 18px;color:var(--muted);font-size:13.5px}
+.callout strong{color:var(--b-review)}
+
+/* ---------- terminal ---------- */
+.terminal{background:#0A0E16;border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.35)}
+.term-bar{display:flex;align-items:center;gap:10px;padding:11px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+.dot{width:11px;height:11px;border-radius:50%}
+.dot.r{background:#F4577A}.dot.y{background:#F2C94C}.dot.g{background:#4FC3A1}
+.term-title{font-family:var(--mono);font-size:12px;color:var(--muted);margin-left:6px}
+.term-bar .spacer{flex:1}
+.copy-btn{font-family:var(--mono);font-size:12px;color:var(--ink);background:var(--term-green);border:none;
+  padding:7px 16px;border-radius:7px;cursor:pointer;font-weight:600;transition:filter .15s}
+.copy-btn:hover{filter:brightness(1.1)}
+.copy-btn.copied{background:var(--b-good)}
+.dl-btn{font-family:var(--mono);font-size:12px;color:var(--text);background:transparent;border:1px solid var(--line);
+  padding:7px 14px;border-radius:7px;cursor:pointer;margin-right:10px}
+.dl-btn:hover{background:var(--panel-2)}
+.term-body{max-height:520px;overflow:auto;padding:20px 22px}
+.term-body pre{font-family:var(--mono);font-size:12.5px;line-height:1.62;color:#C7D3E8;tab-size:4}
+.script-notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:18px}
+.script-note{border:1px solid var(--line);border-left:3px solid var(--b-good);border-radius:8px;padding:13px 16px;background:var(--panel);font-size:13px;color:var(--muted)}
+.script-note b{color:var(--text)}
+
+/* ---------- input zone ---------- */
+.input-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media (max-width:860px){.input-grid{grid-template-columns:1fr}}
+.dropzone{border:1.5px dashed var(--line);border-radius:var(--radius);background:var(--panel);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  padding:36px 20px;cursor:pointer;transition:border-color .15s,background .15s;text-align:center}
+.dropzone:hover,.dropzone.drag{border-color:var(--b-good);background:var(--panel-2)}
+.dropzone .big{font-family:var(--disp);font-weight:600;font-size:16px}
+.dropzone .small{color:var(--faint);font-size:12.5px;font-family:var(--mono)}
+textarea{width:100%;min-height:158px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  color:var(--text);font-family:var(--mono);font-size:12px;padding:14px 16px;resize:vertical}
+textarea::placeholder{color:var(--faint)}
+.parse-row{display:flex;gap:12px;margin-top:14px;align-items:center;flex-wrap:wrap}
+.primary-btn{font-family:var(--disp);font-weight:600;font-size:14px;color:var(--ink);background:var(--b-good);
+  border:none;padding:11px 26px;border-radius:8px;cursor:pointer}
+.primary-btn:hover{filter:brightness(1.08)}
+.ghost-btn{font-family:var(--disp);font-weight:500;font-size:13.5px;color:var(--muted);background:transparent;
+  border:1px solid var(--line);padding:10px 20px;border-radius:8px;cursor:pointer}
+.ghost-btn:hover{color:var(--text);background:var(--panel)}
+.parse-msg{font-family:var(--mono);font-size:12.5px;color:var(--faint)}
+.parse-msg.err{color:var(--b-critical)}
+.parse-msg.ok{color:var(--b-good)}
+
+/* ---------- results ---------- */
+#results{display:none}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:30px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px}
+.kpi .v{font-family:var(--disp);font-weight:700;font-size:27px;letter-spacing:-.02em}
+.kpi .l{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.08em;text-transform:uppercase;margin-top:3px}
+
+/* spectrum — the signature */
+.spectrum-wrap{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:24px 26px 18px;margin-bottom:30px}
+.spectrum-title{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.1em;text-transform:uppercase;margin-bottom:22px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+.spectrum-title .drv{color:var(--muted)}
+.spectrum{position:relative;height:64px}
+.spec-band{position:absolute;top:34px;height:10px;border-radius:99px;opacity:.85}
+.spec-tick{position:absolute;top:48px;font-family:var(--mono);font-size:10px;color:var(--faint);transform:translateX(-50%)}
+.spec-dot{position:absolute;top:22px;width:13px;height:13px;border-radius:50%;transform:translateX(-50%);
+  border:2px solid var(--ink);cursor:pointer;transition:transform .12s}
+.spec-dot:hover{transform:translateX(-50%) scale(1.5);z-index:5}
+.spec-label{position:absolute;top:0;transform:translateX(-50%);font-family:var(--mono);font-size:10px;color:var(--muted);
+  background:var(--panel-2);border:1px solid var(--line);border-radius:5px;padding:2px 7px;white-space:nowrap;
+  opacity:0;pointer-events:none;transition:opacity .12s;z-index:6}
+.spec-dot:hover + .spec-label,.spec-dot:focus + .spec-label{opacity:1}
+
+/* bracket group blocks */
+.bracket-block{margin-bottom:10px;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--panel)}
+.bracket-head{display:flex;align-items:center;gap:14px;padding:14px 20px;cursor:pointer;user-select:none}
+.bracket-head:hover{background:var(--panel-2)}
+.bracket-chip{font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.08em;padding:4px 12px;border-radius:99px;color:var(--ink)}
+.bracket-range{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+.bracket-count{margin-left:auto;font-family:var(--disp);font-weight:600;font-size:15px}
+.bracket-act{font-size:13px;color:var(--muted)}
+.chev{color:var(--faint);transition:transform .15s;font-size:12px}
+.bracket-block.open .chev{transform:rotate(90deg)}
+.bracket-body{display:none;border-top:1px solid var(--line)}
+.bracket-block.open .bracket-body{display:block}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
+  text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap;cursor:pointer;user-select:none}
+th:hover{color:var(--text)}
+th .arrow{font-size:9px;margin-left:4px}
+td{padding:11px 14px;border-bottom:1px solid rgba(38,49,74,.5);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:rgba(27,36,54,.6)}
+td.num{font-family:var(--mono);font-size:12.5px}
+.name-cell .nm{font-weight:600}
+.name-cell .sku{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+.util-cell{min-width:130px}
+.util-bar{height:7px;background:var(--panel-2);border-radius:99px;overflow:hidden;margin-top:5px;border:1px solid var(--line)}
+.util-fill{height:100%;border-radius:99px}
+.util-num{font-family:var(--mono);font-size:12.5px;font-weight:600}
+.tag{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:5px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.tag.warn{color:var(--b-poor);border-color:rgba(240,138,60,.5)}
+.tag.hot{color:var(--b-critical);border-color:rgba(244,87,122,.5)}
+.rec-cell{max-width:340px;font-size:12.5px;color:var(--muted);line-height:1.5}
+.rec-cell b{color:var(--text)}
+.qty-suggest{font-family:var(--mono);font-size:12.5px}
+.qty-suggest .from{color:var(--faint);text-decoration:line-through}
+.qty-suggest .to{color:var(--b-good);font-weight:600}
+
+.export-row{display:flex;gap:12px;margin-top:26px;flex-wrap:wrap}
+
+/* footnotes */
+footer{padding:40px 0 60px;color:var(--faint);font-size:12.5px}
+footer a{color:var(--muted)}
+.src-list{margin-top:8px;line-height:1.9}
+@media (max-width:720px){
+  .term-body{max-height:420px}
+  .rec-cell{max-width:none}
+  th,td{padding:9px 10px}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="eyebrow">Azure Reserved Instances · renewal cycle</div>
+    <h1>RI Renewal Workbench<span class="util">_</span></h1>
+    <p class="lede">One page, three stages: confirm the customer has granted the right access, run the utilisation
+    export in their Cloud Shell, then paste the CSV back here for bracketed, colour-coded renewal recommendations.
+    Everything runs in your browser — no data leaves this page.</p>
+    <nav class="flow" aria-label="Workflow">
+      <a href="#access"><span class="n">1</span> Grant access</a>
+      <a href="#script"><span class="n">2</span> Run the script</a>
+      <a href="#analyse"><span class="n">3</span> Paste results</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ================= STAGE 1 : ACCESS ================= -->
+<section id="access">
+  <div class="wrap">
+    <div class="sec-head"><span class="stage">STAGE 1</span><h2>Access the customer must grant</h2></div>
+    <p class="sec-sub">Reservations are <em>tenant-level</em> resources — they do not inherit permissions from
+    subscriptions, so no subscription role makes them visible. One of the following is required in the
+    <strong>customer tenant</strong>:</p>
+    <div class="roles">
+      <div class="role-card">
+        <h3>Reservations Reader — tenant scope <span class="badge rec">RECOMMENDED</span></h3>
+        <p>Read-only across every reservation in the tenant with a single assignment
+        (<code>Microsoft.Capacity/*/read</code>). A Global Administrator elevates access, then assigns it from
+        <code>Home → Reservations → Role assignment</code>. Covers both listing and the utilisation summaries.</p>
+      </div>
+      <div class="role-card">
+        <h3>Per-reservation Reader <span class="badge alt">FALLBACK</span></h3>
+        <p>An existing owner or billing admin adds you as <code>Reader</code> on each reservation order via
+        <code>Access control (IAM)</code>. Works in constrained tenants where tenant-scope roles are refused —
+        the script below has a manual-order mode built for exactly this case.</p>
+      </div>
+      <div class="role-card">
+        <h3>Billing administrator <span class="badge alt">ALTERNATIVE</span></h3>
+        <p>EA Enterprise Administrator (read-only suffices to view) or MCA billing profile
+        Reader/Owner/Contributor sees all reservations paid through that agreement via
+        <code>Cost Management + Billing → Reservations</code> — no RBAC assignment needed.</p>
+      </div>
+    </div>
+    <div class="callout"><strong>Symptom check:</strong> the error
+    <code>does not have authorization … 'Microsoft.Capacity/reservationOrders/reservations/read' over scope '/providers/Microsoft.Capacity'</code>
+    means none of the above is in place yet. Subscription Owner/Reader will never fix it.</div>
+  </div>
+</section>
+
+<!-- ================= STAGE 2 : SCRIPT ================= -->
+<section id="script">
+  <div class="wrap">
+    <div class="sec-head"><span class="stage">STAGE 2</span><h2>Run the export in Cloud Shell</h2></div>
+    <p class="sec-sub">Paste-safe (no <code>param</code> block — configuration is plain variables at the top) so it
+    works pasted straight into the Cloud Shell PowerShell prompt as well as saved as a <code>.ps1</code>. It pulls
+    30 days of daily-grain utilisation per reservation, excludes the unreliable last 24 hours, and writes the CSV
+    this page analyses.</p>
+
+    <div class="terminal">
+      <div class="term-bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="term-title">Azure Cloud Shell — PowerShell · Get-RIUtilisationReport</span>
+        <span class="spacer"></span>
+        <button class="dl-btn" id="dlScript" type="button">Download .ps1</button>
+        <button class="copy-btn" id="copyScript" type="button">Copy script</button>
+      </div>
+      <div class="term-body"><pre id="scriptView"></pre></div>
+    </div>
+
+    <div class="script-notes">
+      <div class="script-note"><b>Constrained tenant?</b> If tenant listing is refused but you have per-order Reader,
+      fill <code style="font-family:var(--mono)">$ManualOrders</code> at the top with the reservation order IDs from
+      the portal URL or IAM blade — the script switches to per-order mode automatically.</div>
+      <div class="script-note"><b>Data window.</b> Trailing 30-day and 7-day averages are hour-weighted
+      (UsedHours ÷ ReservedHours), which stays honest when quantities changed mid-window. The last 24h is excluded
+      because usage data arrives late and skews low.</div>
+      <div class="script-note"><b>Getting the CSV out.</b> When it finishes:
+      <code style="font-family:var(--mono)">download RI-Utilisation-Report_*.csv</code> in Cloud Shell, then drop the
+      file into Stage 3.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= STAGE 3 : ANALYSE ================= -->
+<section id="analyse">
+  <div class="wrap">
+    <div class="sec-head"><span class="stage">STAGE 3</span><h2>Paste the results</h2></div>
+    <p class="sec-sub">Drop the CSV or paste its contents. Parsing and bracketing happen entirely in your browser.</p>
+
+    <div class="input-grid">
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload CSV file">
+        <div class="big">Drop the CSV here</div>
+        <div class="small">or click to choose · RI-Utilisation-Report_*.csv</div>
+        <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
+      </div>
+      <div>
+        <textarea id="csvPaste" placeholder='…or paste raw CSV, e.g.
+"Bracket","DisplayName","Sku","Quantity","Avg30d%","Avg7d%",…'></textarea>
+      </div>
+    </div>
+    <div class="parse-row">
+      <button class="primary-btn" id="analyseBtn" type="button">Analyse reservations</button>
+      <button class="ghost-btn" id="demoBtn" type="button">Load sample data</button>
+      <span class="parse-msg" id="parseMsg"></span>
+    </div>
+  </div>
+</section>
+
+<!-- ================= RESULTS ================= -->
+<section id="results">
+  <div class="wrap">
+    <div class="sec-head"><span class="stage">REVIEW</span><h2>Renewal decision sheet</h2></div>
+    <p class="sec-sub" id="resultsSub"></p>
+
+    <div class="kpis" id="kpis"></div>
+
+    <div class="spectrum-wrap">
+      <div class="spectrum-title">
+        <span>Utilisation spectrum — each dot is one reservation</span>
+        <span class="drv" id="specDriver"></span>
+      </div>
+      <div class="spectrum" id="spectrum"></div>
+    </div>
+
+    <div id="brackets"></div>
+
+    <div class="export-row">
+      <button class="primary-btn" id="exportCsv" type="button">Download annotated CSV</button>
+      <button class="ghost-btn" id="copySummary" type="button">Copy text summary</button>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Bracket thresholds: OPTIMAL ≥95 · GOOD 80–94 · REVIEW 60–79 · POOR 40–59 · CRITICAL &lt;40 — driven by the
+    30-day hour-weighted average. Suggested renewal quantities are arithmetic starting points
+    (⌈quantity × utilisation⌉), not commercial advice; validate scope, instance size flexibility and workload
+    plans before committing.
+    <div class="src-list">
+      Microsoft Learn sources:
+      <a href="https://learn.microsoft.com/azure/cost-management-billing/reservations/view-reservations">reservation permissions</a> ·
+      <a href="https://learn.microsoft.com/azure/cost-management-billing/reservations/reservation-utilization">viewing utilisation</a> ·
+      <a href="https://learn.microsoft.com/azure/cost-management-billing/reservations/troubleshoot-reservation-utilization">utilisation troubleshooting</a> ·
+      <a href="https://learn.microsoft.com/powershell/module/az.billing/get-azconsumptionreservationsummary">Get-AzConsumptionReservationSummary</a>
+    </div>
+  </div>
+</footer>
+
+<!-- ============ The PowerShell script (raw, never parsed as HTML) ============ -->
+<script type="text/plain" id="psScript">
+# ===========================================================================
+#  Get-RIUtilisationReport  -  Azure Reserved Instance renewal review
+#  Paste-safe: run this whole block in Cloud Shell (PowerShell), or save
+#  as Get-RIUtilisationReport.ps1 and run ./Get-RIUtilisationReport.ps1
+# ===========================================================================
+
+# ------------------------------ CONFIG -------------------------------------
+$LookbackDays = 30          # days of daily-grain history (30 covers both averages)
+$OptimalMin   = 95          # bracket lower bounds
+$GoodMin      = 80
+$ReviewMin    = 60
+$PoorMin      = 40
+$BracketBy    = 'Avg30'     # 'Avg30' (safer for renewals) or 'Avg7'
+$OutputCsv    = "$HOME/RI-Utilisation-Report_$(Get-Date -Format 'yyyyMMdd-HHmm').csv"
+
+# CONSTRAINED TENANT? If tenant-wide listing is refused but you have Reader on
+# individual reservation orders, list the ORDER IDs here (from the portal URL
+# or the reservation's IAM blade). Leave empty to use tenant-wide listing.
+$ManualOrders = @(
+    # 'ca69259e-bd4f-45c3-bf28-3f353f9cce9b'
+    # 'c615c897-aaaa-4123-8527-c42cc0da41e0'
+)
+# ---------------------------------------------------------------------------
+
+$ErrorActionPreference = 'Stop'
+
+foreach ($mod in 'Az.Reservations','Az.Billing') {
+    if (-not (Get-Module -ListAvailable -Name $mod)) {
+        Write-Host "Installing missing module $mod ..." -ForegroundColor Yellow
+        Install-Module $mod -Scope CurrentUser -Force -AllowClobber -WarningAction SilentlyContinue
+    }
+    Import-Module $mod -WarningAction SilentlyContinue | Out-Null
+}
+
+# ---------------------------------------------------------------------------
+# 1. Enumerate reservations (tenant-wide, or per-order in constrained tenants)
+# ---------------------------------------------------------------------------
+$allReservations = @()
+
+if ($ManualOrders.Count -gt 0) {
+    Write-Host "`nManual mode: fetching $($ManualOrders.Count) reservation order(s)..." -ForegroundColor Cyan
+    foreach ($oid in $ManualOrders) {
+        try   { $allReservations += @(Get-AzReservation -OrderId $oid) }
+        catch { Write-Warning "Order ${oid}: $($_.Exception.Message)" }
+    }
+}
+else {
+    Write-Host "`nFetching reservations visible in this tenant..." -ForegroundColor Cyan
+    try {
+        $allReservations = @(Get-AzReservation)
+    }
+    catch {
+        Write-Host ""
+        Write-Warning "Tenant-wide listing failed: $($_.Exception.Message)"
+        Write-Host "LIKELY CAUSE: no reservation-scope access. Fix with ONE of:" -ForegroundColor Yellow
+        Write-Host "  1. Reservations Reader at tenant scope (Global Admin elevates access," -ForegroundColor Yellow
+        Write-Host "     then Home -> Reservations -> Role assignment)  [recommended]" -ForegroundColor Yellow
+        Write-Host "  2. Reader on each reservation order via its IAM blade, then fill" -ForegroundColor Yellow
+        Write-Host "     the ManualOrders list at the top of this script and re-run" -ForegroundColor Yellow
+        Write-Host "  3. EA / MCA billing admin role on the agreement" -ForegroundColor Yellow
+        Write-Host "Subscription Owner/Reader does NOT grant reservation visibility." -ForegroundColor Yellow
+        return
+    }
+}
+
+$active   = @($allReservations | Where-Object { $_.ProvisioningState -eq 'Succeeded' })
+$excluded = @($allReservations | Where-Object { $_.ProvisioningState -ne 'Succeeded' })
+
+Write-Host ("Found {0} reservations total; {1} active, {2} excluded (state not Succeeded)." -f $allReservations.Count, $active.Count, $excluded.Count)
+
+if ($active.Count -eq 0) {
+    Write-Warning "No active reservations returned. Check tenant context: $((Get-AzContext).Tenant.Id)"
+    return
+}
+
+# ---------------------------------------------------------------------------
+# 2. Pull daily utilisation per reservation (last 24h excluded - data latency)
+# ---------------------------------------------------------------------------
+$endDate   = (Get-Date).Date.AddDays(-1)
+$startDate = $endDate.AddDays(-$LookbackDays)
+
+$results = New-Object System.Collections.Generic.List[object]
+$i = 0
+
+foreach ($res in $active) {
+    $i++
+    $idParts  = ($res.Id -split '/reservations/')
+    $orderId  = ($idParts[0] -split '/reservationOrders/')[-1]
+    $reservId = ($idParts[-1] -split '/')[0]
+
+    Write-Progress -Activity "Pulling utilisation summaries" -Status ("{0}/{1}: {2} ({3})" -f $i, $active.Count, $res.DisplayName, $res.Sku) -PercentComplete (($i / $active.Count) * 100)
+
+    $avg30 = $null; $avg7 = $null; $minDay = $null; $maxDay = $null
+    $reservedHrs = 0; $usedHrs = 0; $dataDays = 0; $note = ''
+
+    try {
+        $sumParams = @{
+            Grain              = 'daily'
+            ReservationOrderId = $orderId
+            ReservationId      = $reservId
+            StartDate          = $startDate
+            EndDate            = $endDate
+        }
+        $summaries = @(Get-AzConsumptionReservationSummary @sumParams)
+
+        if ($summaries.Count -gt 0) {
+            $dataDays    = $summaries.Count
+            $reservedHrs = ($summaries | Measure-Object ReservedHour -Sum).Sum
+            $usedHrs     = ($summaries | Measure-Object UsedHour     -Sum).Sum
+            if ($reservedHrs -gt 0) { $avg30 = [math]::Round(($usedHrs / $reservedHrs) * 100, 1) }
+
+            $last7 = @($summaries | Where-Object { $_.UsageDate -ge $endDate.AddDays(-7) })
+            $r7 = ($last7 | Measure-Object ReservedHour -Sum).Sum
+            $u7 = ($last7 | Measure-Object UsedHour     -Sum).Sum
+            if ($r7 -gt 0) { $avg7 = [math]::Round(($u7 / $r7) * 100, 1) }
+
+            $minDay = [math]::Round(($summaries | Measure-Object AvgUtilizationPercentage -Minimum).Minimum, 1)
+            $maxDay = [math]::Round(($summaries | Measure-Object AvgUtilizationPercentage -Maximum).Maximum, 1)
+        }
+        else { $note = 'No summaries returned' }
+    }
+    catch { $note = "API error: $($_.Exception.Message)" }
+
+    # ------------------------------- bracket -------------------------------
+    if ($BracketBy -eq 'Avg7') { $driver = $avg7 } else { $driver = $avg30 }
+
+    if     ($null -eq $driver)       { $bracket = 'NO DATA' ; $action = 'Investigate: RBAC, new RI, or reporting gap' }
+    elseif ($driver -ge $OptimalMin) { $bracket = 'OPTIMAL' ; $action = 'Renew as-is' }
+    elseif ($driver -ge $GoodMin)    { $bracket = 'GOOD'    ; $action = 'Renew; minor tuning possible' }
+    elseif ($driver -ge $ReviewMin)  { $bracket = 'REVIEW'  ; $action = 'Check scope/ISF; partial downsize candidate' }
+    elseif ($driver -ge $PoorMin)    { $bracket = 'POOR'    ; $action = 'Strong downsize / exchange candidate' }
+    else                             { $bracket = 'CRITICAL'; $action = 'Do not renew at current qty; exchange or drop' }
+
+    if ($res.ExpiryDate) { $daysToExpiry = [int]([datetime]$res.ExpiryDate - (Get-Date)).TotalDays } else { $daysToExpiry = $null }
+
+    $results.Add([pscustomobject]@{
+        Bracket             = $bracket
+        DisplayName         = $res.DisplayName
+        Sku                 = $res.Sku
+        ResourceType        = $res.ReservedResourceType
+        Location            = $res.Location
+        Quantity            = $res.Quantity
+        Term                = $res.Term
+        InstanceFlexibility = $res.InstanceFlexibility
+        AppliedScopeType    = $res.AppliedScopeType
+        'Avg30d%'           = $avg30
+        'Avg7d%'            = $avg7
+        'MinDay%'           = $minDay
+        'MaxDay%'           = $maxDay
+        ReservedHours30d    = [math]::Round($reservedHrs, 0)
+        UsedHours30d        = [math]::Round($usedHrs, 0)
+        DataDays            = $dataDays
+        ExpiryDate          = $res.ExpiryDate
+        DaysToExpiry        = $daysToExpiry
+        AutoRenew           = $res.Renew
+        SuggestedAction     = $action
+        Note                = $note
+        ReservationOrderId  = $orderId
+        ReservationId       = $reservId
+    })
+}
+Write-Progress -Activity "Pulling utilisation summaries" -Completed
+
+# ---------------------------------------------------------------------------
+# 3. Console summary + CSV export
+# ---------------------------------------------------------------------------
+$bracketOrder = 'CRITICAL','POOR','REVIEW','GOOD','OPTIMAL','NO DATA'
+
+Write-Host "`n================ RI UTILISATION - RENEWAL REVIEW ================" -ForegroundColor Cyan
+Write-Host ("Window: {0:d} to {1:d} (last 24h excluded)  |  Bracket driver: {2}" -f $startDate, $endDate, $BracketBy)
+
+foreach ($b in $bracketOrder) {
+    $grp = @($results | Where-Object Bracket -eq $b)
+    if ($grp.Count -eq 0) { continue }
+    if ($b -in 'CRITICAL','POOR') { $c = 'Red' } elseif ($b -eq 'REVIEW') { $c = 'Yellow' } elseif ($b -eq 'NO DATA') { $c = 'DarkGray' } else { $c = 'Green' }
+    Write-Host ("`n--- {0}  ({1} reservation(s)) ---" -f $b, $grp.Count) -ForegroundColor $c
+    $grp | Sort-Object 'Avg30d%' | Format-Table DisplayName, Sku, Quantity, 'Avg30d%', 'Avg7d%', 'MinDay%', DaysToExpiry, AutoRenew, SuggestedAction -AutoSize
+}
+
+$withData = @($results | Where-Object { $null -ne $_.'Avg30d%' })
+if ($withData.Count -gt 0) {
+    $fleetAvg = [math]::Round((($withData | Measure-Object UsedHours30d -Sum).Sum / ($withData | Measure-Object ReservedHours30d -Sum).Sum) * 100, 1)
+    Write-Host ("`nFleet-wide hour-weighted utilisation (30d): {0}% across {1} reservations with data." -f $fleetAvg, $withData.Count) -ForegroundColor Cyan
+}
+$expSoon = @($results | Where-Object { $null -ne $_.DaysToExpiry -and $_.DaysToExpiry -le 90 })
+if ($expSoon.Count -gt 0) {
+    Write-Host ("{0} reservation(s) expire within 90 days - prioritise these." -f $expSoon.Count) -ForegroundColor Yellow
+}
+
+$results | Sort-Object @{e={$bracketOrder.IndexOf($_.Bracket)}}, 'Avg30d%' | Export-Csv -Path $OutputCsv -NoTypeInformation -Encoding UTF8
+
+Write-Host "`nCSV written to: $OutputCsv" -ForegroundColor Green
+Write-Host "Download it from Cloud Shell with:  download $(Split-Path $OutputCsv -Leaf)"
+</script>
+
+<script>
+/* ============================ CONFIG ============================ */
+const BRACKETS = [
+  {key:'CRITICAL', min:0,  max:40,  color:'var(--b-critical)', hex:'#F4577A', range:'0–39%',  action:'Do not renew at current quantity; exchange or drop'},
+  {key:'POOR',     min:40, max:60,  color:'var(--b-poor)',     hex:'#F08A3C', range:'40–59%', action:'Strong downsize / exchange candidate'},
+  {key:'REVIEW',   min:60, max:80,  color:'var(--b-review)',   hex:'#F2C94C', range:'60–79%', action:'Check scope/ISF; partial downsize candidate'},
+  {key:'GOOD',     min:80, max:95,  color:'var(--b-good)',     hex:'#4FC3A1', range:'80–94%', action:'Renew; minor tuning possible'},
+  {key:'OPTIMAL',  min:95, max:101, color:'var(--b-optimal)',  hex:'#3AA0FF', range:'95–100%',action:'Renew as-is'},
+];
+const NODATA = {key:'NO DATA', color:'var(--b-nodata)', hex:'#6C7A96', range:'n/a', action:'Investigate: RBAC, new RI, or reporting gap'};
+const ORDER = ['CRITICAL','POOR','REVIEW','GOOD','OPTIMAL','NO DATA'];
+
+let rows = [];            // parsed + enriched reservations
+let sortState = {};       // per-bracket sort
+
+/* ============================ SCRIPT PANEL ============================ */
+const psRaw = document.getElementById('psScript').textContent.trim();
+document.getElementById('scriptView').textContent = psRaw;
+
+document.getElementById('copyScript').addEventListener('click', async (e)=>{
+  try{ await navigator.clipboard.writeText(psRaw); }
+  catch(_){ /* fallback */ const ta=document.createElement('textarea'); ta.value=psRaw; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+  const b=e.currentTarget; b.textContent='Copied ✓'; b.classList.add('copied');
+  setTimeout(()=>{ b.textContent='Copy script'; b.classList.remove('copied'); },1800);
+});
+document.getElementById('dlScript').addEventListener('click', ()=>{
+  const blob=new Blob([psRaw],{type:'text/plain'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='Get-RIUtilisationReport.ps1'; a.click(); URL.revokeObjectURL(a.href);
+});
+
+/* ============================ INPUT ============================ */
+const dz=document.getElementById('dropzone'), fi=document.getElementById('fileInput'),
+      ta=document.getElementById('csvPaste'), msg=document.getElementById('parseMsg');
+
+dz.addEventListener('click',()=>fi.click());
+dz.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();fi.click();} });
+['dragover','dragenter'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('drag');}));
+['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('drag');}));
+dz.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) readFile(f); });
+fi.addEventListener('change',()=>{ if(fi.files[0]) readFile(fi.files[0]); });
+
+function readFile(f){
+  const r=new FileReader();
+  r.onload=()=>{ ta.value=r.result; setMsg('File loaded — press Analyse reservations.','ok'); };
+  r.readAsText(f);
+}
+function setMsg(t,cls){ msg.textContent=t; msg.className='parse-msg'+(cls?' '+cls:''); }
+
+document.getElementById('analyseBtn').addEventListener('click',()=>{
+  const raw=ta.value.trim();
+  if(!raw){ setMsg('Nothing to analyse — drop a CSV or paste its contents first.','err'); return; }
+  parseCsv(raw);
+});
+
+/* sample data for demos / dry runs */
+document.getElementById('demoBtn').addEventListener('click',()=>{
+  ta.value=sampleCsv(); setMsg('Sample data loaded — press Analyse reservations.','ok');
+});
+function sampleCsv(){
+  return `"Bracket","DisplayName","Sku","ResourceType","Location","Quantity","Term","InstanceFlexibility","AppliedScopeType","Avg30d%","Avg7d%","MinDay%","MaxDay%","ReservedHours30d","UsedHours30d","DataDays","ExpiryDate","DaysToExpiry","AutoRenew","SuggestedAction","Note","ReservationOrderId","ReservationId"
+"CRITICAL","SQL-Reporting-RI","Standard_E8s_v5","VirtualMachines","uksouth","2","P3Y","On","Shared","22.4","18.1","0","61","1440","323","30","2026-09-30T00:00:00","42","True","","","aaaa1111","r-01"
+"POOR","Legacy-App-RI","Standard_D4s_v3","VirtualMachines","ukwest","6","P1Y","Off","Single","48.6","51.2","30.5","70.2","4320","2100","30","2026-10-14T00:00:00","56","False","","","aaaa2222","r-02"
+"REVIEW","AKS-NodePool-RI","Standard_D8s_v5","VirtualMachines","uksouth","10","P3Y","On","Shared","71.3","76.8","55","92","7200","5134","30","2026-11-02T00:00:00","75","True","","","aaaa3333","r-03"
+"REVIEW","Files-Premium-RI","premium_ssd_managed_disks_p30","ManagedDisk","uksouth","4","P1Y","","Shared","64.0","58.9","40","81","2880","1843","30","2027-02-11T00:00:00","176","False","","","aaaa4444","r-04"
+"GOOD","Web-Farm-RI","Standard_D4as_v5","VirtualMachines","uksouth","12","P3Y","On","Shared","88.9","91.4","72","100","8640","7681","30","2026-09-08T00:00:00","20","True","","","aaaa5555","r-05"
+"OPTIMAL","Domain-Controllers-RI","Standard_B2ms","VirtualMachines","uksouth","3","P3Y","On","Shared","99.8","100","98","100","2160","2156","30","2026-12-01T00:00:00","104","True","","","aaaa6666","r-06"
+"OPTIMAL","SQL-MI-Compute-RI","SQLMI_GP_Gen5","SqlDataBase","uksouth","8","P3Y","","Shared","97.2","96.5","91","100","5760","5599","30","2027-05-20T00:00:00","274","False","","","aaaa7777","r-07"
+"NO DATA","New-Purchase-RI","Standard_F8s_v2","VirtualMachines","ukwest","2","P1Y","On","Single","","","","","0","0","0","2027-08-01T00:00:00","347","False","","No summaries returned","aaaa8888","r-08"`;
+}
+
+/* ============================ PARSE + ENRICH ============================ */
+function num(v){ if(v===undefined||v===null) return null; const s=String(v).trim(); if(s==='') return null; const n=parseFloat(s.replace('%','')); return isNaN(n)?null:n; }
+function str(v){ return v===undefined||v===null ? '' : String(v).trim(); }
+function truthy(v){ return /^true$/i.test(str(v)); }
+
+function parseCsv(raw){
+  const res=Papa.parse(raw,{header:true,skipEmptyLines:'greedy',transformHeader:h=>h.replace(/^\uFEFF/,'').trim()});
+  if(!res.data.length){ setMsg('Could not read any rows — is this the CSV from the script?','err'); return; }
+  const hdrs=res.meta.fields||[];
+  const need=['DisplayName'];
+  if(!need.every(h=>hdrs.includes(h))){
+    setMsg('Missing expected columns (need at least DisplayName, Avg30d%, Quantity). Check you exported with the workbench script.','err'); return;
+  }
+  rows=res.data.filter(r=>str(r.DisplayName)!=='').map(enrich);
+  if(!rows.length){ setMsg('No reservation rows found in the CSV.','err'); return; }
+  setMsg(`Parsed ${rows.length} reservation${rows.length===1?'':'s'}.`,'ok');
+  render();
+  document.getElementById('results').style.display='block';
+  document.getElementById('results').scrollIntoView({behavior:'smooth'});
+}
+
+function bracketFor(util){
+  if(util===null) return NODATA;
+  return BRACKETS.find(b=>util>=b.min && util<b.max) || NODATA;
+}
+
+function enrich(r){
+  const avg30=num(r['Avg30d%']), avg7=num(r['Avg7d%']);
+  const driver=avg30!==null?avg30:avg7;           // fall back to 7d if 30d missing
+  const b=bracketFor(driver);
+  const qty=num(r.Quantity)||0;
+  const days=num(r.DaysToExpiry);
+  const auto=truthy(r.AutoRenew);
+  const isf=str(r.InstanceFlexibility);
+  const scope=str(r.AppliedScopeType);
+  const trend = (avg30!==null&&avg7!==null) ? avg7-avg30 : null;
+
+  /* suggested renewal quantity: ceil(qty × util), floor 0, only if it saves */
+  let suggQty=null;
+  if(driver!==null && qty>1){
+    const s=Math.max(0,Math.ceil(qty*driver/100));
+    if(s<qty) suggQty=s;
+  }
+  if(driver!==null && qty===1 && driver<40) suggQty=0;
+
+  /* recommendation text */
+  const rec=[];
+  if(b.key==='OPTIMAL'){
+    rec.push('Fully utilised — <b>renew as-is</b>.');
+    if(!auto) rec.push('Auto-renew is off: renew manually before expiry or switch it on.');
+  } else if(b.key==='GOOD'){
+    rec.push('<b>Renew.</b> Utilisation is healthy.');
+    if(suggQty!==null) rec.push(`If the gap is structural, renewing at <b>${suggQty}</b> instead of ${qty} removes idle units.`);
+  } else if(b.key==='REVIEW'){
+    if(scope==='Single') rec.push('Scope is <b>Single</b> — widening to Shared may lift utilisation before any downsize.');
+    if(/off/i.test(isf)) rec.push('Instance size flexibility is <b>off</b> — enabling it can rescue mismatched sizes in the same family.');
+    if(suggQty!==null) rec.push(`If scope/ISF checks don't close the gap, renew at <b>${suggQty}</b> of ${qty}.`);
+    if(!rec.length) rec.push('Verify the workload mix, then consider a partial downsize at renewal.');
+  } else if(b.key==='POOR'){
+    rec.push('<b>Downsize at renewal.</b>');
+    if(suggQty!==null) rec.push(`Arithmetic right-size: <b>${suggQty}</b> of ${qty} units.`);
+    if(scope==='Single') rec.push('Also check scope — Single scope is a common cause of stranded benefit.');
+  } else if(b.key==='CRITICAL'){
+    rec.push('<b>Do not renew at this quantity.</b> Confirm whether the workload moved, resized, or was decommissioned.');
+    if(suggQty!==null&&suggQty>0) rec.push(`If partially needed, renew at most <b>${suggQty}</b>.`);
+    else rec.push('Likely let it lapse, or exchange remaining term if mid-cycle.');
+  } else {
+    rec.push('No utilisation data returned — check RBAC on this order, or the RI is too new to report.');
+  }
+  if(auto && driver!==null && driver<80) rec.push('<b>Auto-renew is ON</b> for an under-utilised RI — the classic renewal trap. Disable until the decision is made.');
+  if(days!==null && days<=90) rec.push(`Expires in <b>${days} day${days===1?'':'s'}</b> — decision needed this cycle.`);
+  if(trend!==null && Math.abs(trend)>=10) rec.push(trend>0?`Trending up (+${trend.toFixed(1)} pts vs 30d) — recent fix may already be working.`:`Trending down (${trend.toFixed(1)} pts vs 30d) — recent change is reducing usage.`);
+
+  return {
+    ...r, avg30, avg7, driver, bracket:b, qty, days, auto, isf, scope, trend, suggQty,
+    recommendation:rec.join(' '),
+    note:str(r.Note)
+  };
+}
+
+/* ============================ RENDER ============================ */
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmt(n,suf=''){ return n===null?'—':n.toLocaleString(undefined,{maximumFractionDigits:1})+suf; }
+
+function render(){
+  /* --- KPIs --- */
+  const withData=rows.filter(r=>r.driver!==null);
+  const totRes=rows.reduce((a,r)=>a+(num(r.ReservedHours30d)||0),0);
+  const totUsed=rows.reduce((a,r)=>a+(num(r.UsedHours30d)||0),0);
+  const fleet= totRes>0 ? (totUsed/totRes*100) : null;
+  const expSoon=rows.filter(r=>r.days!==null&&r.days<=90).length;
+  const actionable=rows.filter(r=>['CRITICAL','POOR','REVIEW'].includes(r.bracket.key)).length;
+  const idleUnits=rows.reduce((a,r)=>a+(r.suggQty!==null?(r.qty-r.suggQty):0),0);
+
+  document.getElementById('kpis').innerHTML=`
+    <div class="kpi"><div class="v">${rows.length}</div><div class="l">Reservations</div></div>
+    <div class="kpi"><div class="v" style="color:${fleet===null?'var(--muted)':fleet>=80?'var(--b-good)':fleet>=60?'var(--b-review)':'var(--b-critical)'}">${fleet===null?'—':fleet.toFixed(1)+'%'}</div><div class="l">Fleet utilisation · 30d</div></div>
+    <div class="kpi"><div class="v" style="color:${actionable?'var(--b-poor)':'var(--b-good)'}">${actionable}</div><div class="l">Need action (≤79%)</div></div>
+    <div class="kpi"><div class="v" style="color:${expSoon?'var(--b-review)':'var(--text)'}">${expSoon}</div><div class="l">Expire ≤ 90 days</div></div>
+    <div class="kpi"><div class="v" style="color:${idleUnits?'var(--b-critical)':'var(--b-good)'}">${idleUnits}</div><div class="l">Idle units to shed</div></div>`;
+
+  document.getElementById('resultsSub').textContent=
+    `${withData.length} of ${rows.length} reservations returned utilisation data. Brackets are driven by the 30-day hour-weighted average (falls back to 7-day where 30-day is missing).`;
+  document.getElementById('specDriver').textContent='driver: Avg30d% (fallback Avg7d%)';
+
+  openState=null;               // fresh dataset -> default expand actionable groups
+  renderSpectrum();
+  renderBrackets();
+}
+
+function renderSpectrum(){
+  const el=document.getElementById('spectrum'); el.innerHTML='';
+  /* bands */
+  BRACKETS.forEach(b=>{
+    const left=b.min, width=Math.min(b.max,100)-b.min;
+    const d=document.createElement('div'); d.className='spec-band';
+    d.style.left=left+'%'; d.style.width=width+'%'; d.style.background=b.hex; d.style.opacity=.35;
+    el.appendChild(d);
+  });
+  /* ticks */
+  [0,40,60,80,95,100].forEach(t=>{
+    const d=document.createElement('div'); d.className='spec-tick'; d.style.left=t+'%'; d.textContent=t;
+    el.appendChild(d);
+  });
+  /* dots with slight vertical jitter to reduce overlap */
+  const withData=rows.filter(r=>r.driver!==null);
+  withData.forEach((r,i)=>{
+    const dot=document.createElement('button'); dot.className='spec-dot'; dot.type='button';
+    dot.style.left=Math.min(r.driver,100)+'%';
+    dot.style.top=(22 - (i%3)*7)+'px';
+    dot.style.background=r.bracket.hex;
+    dot.setAttribute('aria-label',`${str(r.DisplayName)}: ${r.driver}%`);
+    const lab=document.createElement('div'); lab.className='spec-label';
+    lab.style.left=Math.min(Math.max(r.driver,6),94)+'%';
+    lab.textContent=`${str(r.DisplayName)} · ${r.driver}%`;
+    el.appendChild(dot); el.appendChild(lab);
+  });
+}
+
+let openState=null;   // remembers which groups the user expanded across re-renders
+function renderBrackets(){
+  const host=document.getElementById('brackets');
+  if(openState===null){ openState={}; ORDER.forEach(k=>openState[k]=['CRITICAL','POOR','REVIEW'].includes(k)); }
+  else{ host.querySelectorAll('.bracket-block').forEach(b=>{ openState[b.dataset.key]=b.classList.contains('open'); }); }
+  host.innerHTML='';
+  ORDER.forEach(key=>{
+    const meta= key==='NO DATA' ? NODATA : BRACKETS.find(b=>b.key===key);
+    const grp=rows.filter(r=>r.bracket.key===key);
+    if(!grp.length) return;
+    const open=openState[key];
+    const block=document.createElement('div'); block.className='bracket-block'+(open?' open':'');
+    block.dataset.key=key;
+    block.innerHTML=`
+      <div class="bracket-head" role="button" tabindex="0" aria-expanded="${open}">
+        <span class="chev">▶</span>
+        <span class="bracket-chip" style="background:${meta.hex}">${meta.key}</span>
+        <span class="bracket-range">${meta.range}</span>
+        <span class="bracket-act">${meta.action}</span>
+        <span class="bracket-count">${grp.length}</span>
+      </div>
+      <div class="bracket-body">${tableFor(grp,key)}</div>`;
+    const head=block.querySelector('.bracket-head');
+    const toggle=()=>{ block.classList.toggle('open'); head.setAttribute('aria-expanded',block.classList.contains('open')); };
+    head.addEventListener('click',toggle);
+    head.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();} });
+    host.appendChild(block);
+    /* header sorting */
+    block.querySelectorAll('th[data-sort]').forEach(th=>{
+      th.addEventListener('click',()=>{
+        const col=th.dataset.sort;
+        const cur=sortState[key]||{};
+        const dir= cur.col===col && cur.dir==='asc' ? 'desc':'asc';
+        sortState[key]={col,dir};
+        grp.sort((a,b)=>cmp(a,b,col,dir));
+        block.querySelector('.bracket-body').innerHTML=tableFor(grp,key);
+        /* re-bind after rerender */
+        renderBrackets();
+      });
+    });
+  });
+}
+
+function cmp(a,b,col,dir){
+  const get=r=>{
+    switch(col){
+      case 'name': return str(r.DisplayName).toLowerCase();
+      case 'util': return r.driver===null?-1:r.driver;
+      case 'qty' : return r.qty;
+      case 'exp' : return r.days===null?1e9:r.days;
+      default: return 0;
+    }
+  };
+  const av=get(a),bv=get(b);
+  const s= av<bv?-1:av>bv?1:0;
+  return dir==='asc'?s:-s;
+}
+
+function tableFor(grp,key){
+  const s=sortState[key]||{};
+  const arrow=c=> s.col===c ? `<span class="arrow">${s.dir==='asc'?'▲':'▼'}</span>` : '';
+  const rowsHtml=grp.map(r=>{
+    const util=r.driver;
+    const flags=[];
+    if(r.auto && util!==null && util<80) flags.push('<span class="tag hot">AUTO-RENEW ON</span>');
+    else if(r.auto) flags.push('<span class="tag">auto-renew</span>');
+    if(r.days!==null&&r.days<=90) flags.push(`<span class="tag warn">expires ${r.days}d</span>`);
+    if(r.scope==='Single') flags.push('<span class="tag">single scope</span>');
+    if(/off/i.test(r.isf)) flags.push('<span class="tag">ISF off</span>');
+    if(r.note) flags.push(`<span class="tag">${esc(r.note)}</span>`);
+    const qtyCell = r.suggQty!==null
+      ? `<span class="qty-suggest"><span class="from">${r.qty}</span> → <span class="to">${r.suggQty}</span></span>`
+      : `<span class="qty-suggest">${r.qty||'—'}</span>`;
+    return `<tr>
+      <td class="name-cell"><div class="nm">${esc(str(r.DisplayName))}</div>
+        <div class="sku">${esc(str(r.Sku))}${str(r.Location)?' · '+esc(str(r.Location)):''}${str(r.Term)?' · '+esc(str(r.Term)):''}</div></td>
+      <td class="util-cell">
+        <span class="util-num" style="color:${r.bracket.hex}">${fmt(util,'%')}</span>
+        <span style="font-family:var(--mono);font-size:11px;color:var(--faint)"> 7d ${fmt(r.avg7,'%')}</span>
+        <div class="util-bar"><div class="util-fill" style="width:${util===null?0:Math.min(util,100)}%;background:${r.bracket.hex}"></div></div>
+      </td>
+      <td class="num">${qtyCell}</td>
+      <td class="num">${r.days===null?'—':r.days+'d'}</td>
+      <td>${flags.join(' ')||'—'}</td>
+      <td class="rec-cell">${r.recommendation}</td>
+    </tr>`;
+  }).join('');
+  return `<table>
+    <thead><tr>
+      <th data-sort="name">Reservation${arrow('name')}</th>
+      <th data-sort="util">Utilisation · 30d${arrow('util')}</th>
+      <th data-sort="qty">Qty → suggested${arrow('qty')}</th>
+      <th data-sort="exp">Expiry${arrow('exp')}</th>
+      <th>Flags</th>
+      <th>Recommendation</th>
+    </tr></thead>
+    <tbody>${rowsHtml}</tbody></table>`;
+}
+
+/* ============================ EXPORT ============================ */
+document.getElementById('exportCsv').addEventListener('click',()=>{
+  const out=rows.map(r=>({
+    Bracket:r.bracket.key, DisplayName:str(r.DisplayName), Sku:str(r.Sku),
+    ResourceType:str(r.ResourceType), Location:str(r.Location),
+    Quantity:r.qty, SuggestedRenewQty: r.suggQty!==null? r.suggQty : r.qty,
+    'Avg30d%':r.avg30, 'Avg7d%':r.avg7,
+    Term:str(r.Term), AppliedScopeType:r.scope, InstanceFlexibility:r.isf,
+    ExpiryDate:str(r.ExpiryDate), DaysToExpiry:r.days, AutoRenew:r.auto,
+    Recommendation:r.recommendation.replace(/<[^>]+>/g,''), Note:r.note,
+    ReservationOrderId:str(r.ReservationOrderId), ReservationId:str(r.ReservationId)
+  }));
+  const csv=Papa.unparse(out);
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='RI-Renewal-Decisions_'+new Date().toISOString().slice(0,10)+'.csv';
+  a.click(); URL.revokeObjectURL(a.href);
+});
+
+document.getElementById('copySummary').addEventListener('click',async(e)=>{
+  const lines=['RI RENEWAL REVIEW — '+new Date().toLocaleDateString(),''];
+  ORDER.forEach(key=>{
+    const grp=rows.filter(r=>r.bracket.key===key);
+    if(!grp.length) return;
+    lines.push(`${key} (${grp.length}):`);
+    grp.forEach(r=>{
+      const q=r.suggQty!==null?` | qty ${r.qty} -> ${r.suggQty}`:'';
+      lines.push(`  - ${str(r.DisplayName)} [${str(r.Sku)}] ${fmt(r.driver,'%')}${q}${r.days!==null?` | expires ${r.days}d`:''}`);
+    });
+    lines.push('');
+  });
+  const txt=lines.join('\n');
+  try{ await navigator.clipboard.writeText(txt);}catch(_){}
+  const b=e.currentTarget; const old=b.textContent; b.textContent='Copied ✓';
+  setTimeout(()=>b.textContent=old,1600);
+});
+</script>
+</body>
+</html>
